@@ -392,6 +392,10 @@ def create_project():
 
 @app.route("/synopsis", methods=["GET"])
 def synopsis():
+    # Check if config exist
+    if not os.path.exists("config.json"):
+        flash("You need to create a config first.", "warning")
+        return redirect("/config")
     """Display synopsis or chat interface"""
     synopsis_content = get_synopsis()
     settings = get_settings()
