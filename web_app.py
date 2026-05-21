@@ -22,25 +22,98 @@ import prompts
 from agents import PROMPT_DEBUGGING_DIR, BookAgents, check_openai_connection
 from config import get_config
 
-# Constants for file paths
-BOOK_OUTPUT_DIR = "book_output"
+# ============================================================
+# Book / Project path management
+# ============================================================
+
+BASE_BOOK_DIR = "book_output"
 TEXT_EXTENSION = ".txt"
-WORLD_FILE = os.path.join(BOOK_OUTPUT_DIR, f"world{TEXT_EXTENSION}")
-CHARACTERS_FILE = os.path.join(BOOK_OUTPUT_DIR, f"characters{TEXT_EXTENSION}")
-SYNOPSIS_FILE = os.path.join(BOOK_OUTPUT_DIR, f"synopsis{TEXT_EXTENSION}")
-OUTLINE_FILE = os.path.join(BOOK_OUTPUT_DIR, f"outline{TEXT_EXTENSION}")
-CHAPTERS_JSON_FILE = os.path.join(BOOK_OUTPUT_DIR, "chapters.json")
-MASTER_PROMPT_FILE = os.path.join(BOOK_OUTPUT_DIR, f"master_prompt{TEXT_EXTENSION}")
-SETTINGS_FILE = os.path.join(BOOK_OUTPUT_DIR, "settings.json")
-OUTLINE_JSON_FILE = os.path.join(BOOK_OUTPUT_DIR, "outline.json")
-CHAPTERS_DIR = os.path.join(BOOK_OUTPUT_DIR, "chapters")
-PREVIOUS_CHAPTER_CONTEXT_LENGTH = 2000
+
+# These globals are recomputed by reload_paths()
+BOOK_OUTPUT_DIR = ""
+WORLD_FILE = ""
+CHARACTERS_FILE = ""
+SYNOPSIS_FILE = ""
+OUTLINE_FILE = ""
+CHAPTERS_JSON_FILE = ""
+MASTER_PROMPT_FILE = ""
+SETTINGS_FILE = ""
+OUTLINE_JSON_FILE = ""
+CHAPTERS_DIR = ""
+
+
+def reload_paths(project_name: str):
+    """Recompute all path globals for the given project name."""
+    global BOOK_OUTPUT_DIR, WORLD_FILE, CHARACTERS_FILE, SYNOPSIS_FILE
+    global OUTLINE_FILE, CHAPTERS_JSON_FILE, MASTER_PROMPT_FILE, SETTINGS_FILE
+    global OUTLINE_JSON_FILE, CHAPTERS_DIR
+
+    BOOK_OUTPUT_DIR = os.path.join(BASE_BOOK_DIR, project_name)
+    WORLD_FILE = os.path.join(BOOK_OUTPUT_DIR, f"world{TEXT_EXTENSION}")
+    CHARACTERS_FILE = os.path.join(BOOK_OUTPUT_DIR, f"characters{TEXT_EXTENSION}")
+    SYNOPSIS_FILE = os.path.join(BOOK_OUTPUT_DIR, f"synopsis{TEXT_EXTENSION}")
+    OUTLINE_FILE = os.path.join(BOOK_OUTPUT_DIR, f"outline{TEXT_EXTENSION}")
+    CHAPTERS_JSON_FILE = os.path.join(BOOK_OUTPUT_DIR, "chapters.json")
+    MASTER_PROMPT_FILE = os.path.join(BOOK_OUTPUT_DIR, f"master_prompt{TEXT_EXTENSION}")
+    SETTINGS_FILE = os.path.join(BOOK_OUTPUT_DIR, "settings.json")
+    OUTLINE_JSON_FILE = os.path.join(BOOK_OUTPUT_DIR, "outline.json")
+    CHAPTERS_DIR = os.path.join(BOOK_OUTPUT_DIR, "chapters")
+
+
+def get_current_project_name() -> str:
+    """Read the current project name from settings, or default."""
+    # We need the project-level settings file, not the per-project one.
+    # We store the active project in a dotfile in the base book_output dir.
+    project_file = os.path.join(BASE_BOOK_DIR, ".active_project")
+    if os.path.exists(project_file):
+        with open(project_file, "r", encoding="utf-8") as f:
+            name = f.read().strip()
+            if name:
+                return name
+    return "default"
+
+
+def set_current_project_name(name: str):
+    """Persist the active project name."""
+    os.makedirs(BASE_BOOK_DIR, exist_ok=True)
+    project_file = os.path.join(BASE_BOOK_DIR, ".active_project")
+    with open(project_file, "w", encoding="utf-8") as f:
+        f.write(name.strip())
+
+
+def list_projects() -> list:
+    """List all available projects (subdirectories of book_output/)."""
+    if not os.path.exists(BASE_BOOK_DIR):
+        return ["default"]
+    entries = sorted(os.listdir(BASE_BOOK_DIR))
+    projects = [e for e in entries if os.path.isdir(os.path.join(BASE_BOOK_DIR, e))]
+    # Ensure "default" is always in the list
+    if "default" not in projects:
+        projects.insert(0, "default")
+    # Filter out hidden directories and known non-project dirs
+    projects = [p for p in projects if not p.startswith(".") and p != "__pycache__"]
+    return projects
+
+
+# Initialise paths from the persisted project name
+_current_project = get_current_project_name()
+reload_paths(_current_project)
+
+# Ensure directories exist
+os.makedirs(CHAPTERS_DIR, exist_ok=True)
+
+# ============================================================
+
+PREVIOUS_CHAPTER_CONTEXT_LENGTH = 8000
 
 app = Flask(__name__)
-app.secret_key = "ai-book-writer-secret-key"  # For session management
+app.secret_key = "ai-book-writer-secret-key"
 
-# Ensure book_output directory exists
-os.makedirs(CHAPTERS_DIR, exist_ok=True)
+# Register the project name in template globals so all templates can access it
+@app.context_processor
+def inject_project():
+    return {"current_project": _current_project, "projects": list_projects()}
+
 
 # Initialize global variables
 agent_config = get_config()
@@ -50,7 +123,7 @@ agent_config = get_config()
 def get_world_theme():
     """Get world theme from file."""
     if os.path.exists(WORLD_FILE):
-        with open(WORLD_FILE, "r") as f:
+        with open(WORLD_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     return ""
 
@@ -58,7 +131,7 @@ def get_world_theme():
 def get_characters():
     """Get characters from file."""
     if os.path.exists(CHARACTERS_FILE):
-        with open(CHARACTERS_FILE, "r") as f:
+        with open(CHARACTERS_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     return ""
 
@@ -66,7 +139,7 @@ def get_characters():
 def get_outline():
     """Get outline from file."""
     if os.path.exists(OUTLINE_FILE):
-        with open(OUTLINE_FILE, "r") as f:
+        with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     return ""
 
@@ -74,7 +147,7 @@ def get_outline():
 def get_synopsis():
     """Get synopsis from file."""
     if os.path.exists(SYNOPSIS_FILE):
-        with open(SYNOPSIS_FILE, "r") as f:
+        with open(SYNOPSIS_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     return ""
 
@@ -83,7 +156,7 @@ def get_chapters():
     """Get chapters from file, including a flag if content exists."""
     chapters = []
     if os.path.exists(CHAPTERS_JSON_FILE):
-        with open(CHAPTERS_JSON_FILE, "r") as f:
+        with open(CHAPTERS_JSON_FILE, "r", encoding="utf-8") as f:
             try:
                 chapters = json.load(f)
             except json.JSONDecodeError:
@@ -160,7 +233,7 @@ def get_action_beats(chapter_number):
         CHAPTERS_DIR, f"chapter_{chapter_number}_action_beats{TEXT_EXTENSION}"
     )
     if os.path.exists(action_beats_path):
-        with open(action_beats_path, "r") as f:
+        with open(action_beats_path, "r", encoding="utf-8") as f:
             return f.read().strip()
     return ""
 
@@ -189,11 +262,21 @@ def get_previous_chapter_context(chapter_number):
 
     previous_context = ""
     if chapter_number > 1:
+        prev_editor_path = os.path.join(
+            CHAPTERS_DIR,
+            f"chapter_{chapter_number - 1}_editor{TEXT_EXTENSION}",
+        )
         prev_chapter_path = os.path.join(
             CHAPTERS_DIR, f"chapter_{chapter_number - 1}{TEXT_EXTENSION}"
         )
-        if os.path.exists(prev_chapter_path):
-            with open(prev_chapter_path, "r", encoding="utf-8") as f:
+        prev_path = None
+        if os.path.exists(prev_editor_path) and os.path.getsize(prev_editor_path) > 0:
+            prev_path = prev_editor_path
+        elif os.path.exists(prev_chapter_path):
+            prev_path = prev_chapter_path
+
+        if prev_path:
+            with open(prev_path, "r", encoding="utf-8") as f:
                 content = f.read()
                 previous_context = content[-PREVIOUS_CHAPTER_CONTEXT_LENGTH:]
 
@@ -214,6 +297,75 @@ def index():
     chapters = get_chapters()
 
     return render_template("index.html", chapters=chapters)
+
+
+@app.route("/config", methods=["GET"])
+def config():
+    """Display config interface"""
+    settings = get_config()
+
+    return render_template(
+        "config.html",
+        settings=settings,
+    )
+
+
+@app.route("/check_connection", methods=["POST"])
+def check_connection():
+    """Test the AI API connection."""
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            base_url=agent_config["config_list"][0]["base_url"],
+            api_key=agent_config["config_list"][0]["api_key"],
+        )
+        client.models.list()
+        return jsonify({"success": True, "message": "Connection successful! API is reachable."})
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Connection failed: {str(e)}"})
+
+
+# ---- Project switching endpoints ----
+
+
+@app.route("/set_project", methods=["POST"])
+def set_project():
+    """Switch to a different project (book). Reloads all paths."""
+    global _current_project
+    data = request.json
+    name = data.get("project", "default").strip()
+    if not name or name.startswith("."):
+        return jsonify({"success": False, "error": "Invalid project name"}), 400
+
+    _current_project = name
+    set_current_project_name(name)
+    reload_paths(name)
+    os.makedirs(CHAPTERS_DIR, exist_ok=True)
+    return jsonify({"success": True, "project": name})
+
+
+@app.route("/create_project", methods=["POST"])
+def create_project():
+    """Create a new project (empty book) and switch to it."""
+    global _current_project
+    data = request.json
+    name = data.get("project", "").strip()
+    if not name or name.startswith("."):
+        return jsonify({"success": False, "error": "Invalid project name"}), 400
+
+    project_dir = os.path.join(BASE_BOOK_DIR, name)
+    if os.path.exists(project_dir):
+        return jsonify({"success": False, "error": f"Project '{name}' already exists"}), 400
+
+    os.makedirs(os.path.join(project_dir, "chapters"), exist_ok=True)
+
+    _current_project = name
+    set_current_project_name(name)
+    reload_paths(name)
+    return jsonify({"success": True, "project": name})
+
+
+# ---- End project switching ----
 
 
 @app.route("/synopsis", methods=["GET"])
@@ -328,7 +480,7 @@ def finalize_synopsis_stream():
         synopsis_content = complete_content.strip()
         synopsis_content = re.sub(r"\n+", "\n", synopsis_content)
 
-        with open(SYNOPSIS_FILE, "w") as f:
+        with open(SYNOPSIS_FILE, "w", encoding='utf-8') as f:
             f.write(synopsis_content)
 
         # Send completion marker
@@ -347,7 +499,7 @@ def save_synopsis():
     synopsis_content = request.form.get("synopsis")
 
     # Save to file
-    with open(SYNOPSIS_FILE, "w") as f:
+    with open(SYNOPSIS_FILE, "w", encoding='utf-8') as f:
         f.write(synopsis_content)
 
     return jsonify({"success": True})
@@ -469,7 +621,7 @@ def finalize_world():
     world_theme = world_theme.strip()
     world_theme = re.sub(r"\n+", "\n", world_theme.strip())
 
-    with open(WORLD_FILE, "w") as f:
+    with open(WORLD_FILE, "w", encoding='utf-8') as f:
         f.write(world_theme)
 
     return jsonify({"world_theme": world_theme})
@@ -516,7 +668,7 @@ def finalize_world_stream():
         world_theme = complete_content.strip()
         world_theme = re.sub(r"\n+", "\n", world_theme)
 
-        with open(WORLD_FILE, "w") as f:
+        with open(WORLD_FILE, "w", encoding='utf-8') as f:
             f.write(world_theme)
 
         # Send completion marker
@@ -535,7 +687,7 @@ def save_world():
     world_theme = request.form.get("world_theme")
 
     # Save to file
-    with open(WORLD_FILE, "w") as f:
+    with open(WORLD_FILE, "w", encoding='utf-8') as f:
         f.write(world_theme)
 
     return jsonify({"success": True})
@@ -578,7 +730,7 @@ def save_characters():
     characters_content = request.form.get("characters")
 
     # Save to file
-    with open(CHARACTERS_FILE, "w") as f:
+    with open(CHARACTERS_FILE, "w", encoding='utf-8') as f:
         f.write(characters_content)
 
     return jsonify({"success": True})
@@ -600,19 +752,19 @@ def outline():
         return redirect("/characters")
 
     # Get world theme and characters
-    with open(WORLD_FILE, "r") as f:
+    with open(WORLD_FILE, "r", encoding="utf-8") as f:
         world_theme = f.read()
 
-    with open(CHARACTERS_FILE, "r") as f:
+    with open(CHARACTERS_FILE, "r", encoding="utf-8") as f:
         characters = f.read()
 
-    with open(SYNOPSIS_FILE, "r") as f:
+    with open(SYNOPSIS_FILE, "r", encoding="utf-8") as f:
         synopsis = f.read()
 
     # GET request - just show the page
     outline_content = ""
     if os.path.exists(OUTLINE_FILE):
-        with open(OUTLINE_FILE, "r") as f:
+        with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
             outline_content = f.read()
 
     # Get chapter list
@@ -652,7 +804,7 @@ def generate_chapters():
         return jsonify({"error": "Outline not found. Please create an outline first."})
 
     # Get the outline content
-    with open(OUTLINE_FILE, "r") as f:
+    with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
         outline_content = f.read()
 
     # Get the desired number of chapters
@@ -662,7 +814,7 @@ def generate_chapters():
     chapters = parse_outline_to_chapters(outline_content, num_chapters)
 
     # Save chapters to file
-    with open(CHAPTERS_JSON_FILE, "w") as f:
+    with open(CHAPTERS_JSON_FILE, "w", encoding="utf-8") as f:
         json.dump(chapters, f, indent=2)
 
     return jsonify({"success": True, "num_chapters": len(chapters)})
@@ -674,7 +826,7 @@ def save_outline():
     outline_content = request.form.get("outline")
 
     # Save to file
-    with open(OUTLINE_FILE, "w") as f:
+    with open(OUTLINE_FILE, "w", encoding='utf-8') as f:
         f.write(outline_content)
 
     # Generate and save chapters
@@ -682,7 +834,7 @@ def save_outline():
     chapters = parse_outline_to_chapters(outline_content, num_chapters)
 
     # Save chapters to file
-    with open(CHAPTERS_JSON_FILE, "w") as f:
+    with open(CHAPTERS_JSON_FILE, "w", encoding="utf-8") as f:
         json.dump(chapters, f, indent=2)
 
     return jsonify({"success": True, "num_chapters": len(chapters)})
@@ -732,6 +884,12 @@ def chapter(chapter_number):
         world_theme = get_world_theme()
         characters = get_characters()
 
+        settings = get_settings()
+        chapter_settings_for_length = settings.get("chapters", {}).get(str(chapter_number), {})
+        min_words = chapter_settings_for_length.get(
+            "min_words", settings.get("min_words", 5000)
+        )
+
         # Get context from the previous chapter to ensure continuity
         previous_context = get_previous_chapter_context(chapter_number)
 
@@ -761,6 +919,7 @@ def chapter(chapter_number):
                 previous_context=previous_context,
                 point_of_view=point_of_view,
                 tense=tense,
+                min_words=min_words,
             ),
         )
 
@@ -856,6 +1015,12 @@ def _handle_chapter_stream(chapter_number, agent_name):
     world_theme = get_world_theme()
     characters = get_characters()
 
+    settings = get_settings()
+    chapter_settings_for_length = settings.get("chapters", {}).get(str(chapter_number), {})
+    min_words = chapter_settings_for_length.get(
+        "min_words", settings.get("min_words", 5000)
+    )
+
     # Get context from the previous chapter to ensure continuity
     previous_context = get_previous_chapter_context(chapter_number)
 
@@ -891,6 +1056,7 @@ def _handle_chapter_stream(chapter_number, agent_name):
         point_of_view=point_of_view,
         tense=tense,
         chapter_content=chapter_content,  # Included for editor
+        min_words=min_words,
     )
 
     # If requested, return the full prompt for debugging instead of generating
@@ -969,7 +1135,7 @@ def chapter_editor(chapter_number):
     )
     original_chapter_content = ""
     if os.path.exists(chapter_file_path):
-        with open(chapter_file_path, "r") as f:
+        with open(chapter_file_path, "r", encoding="utf-8") as f:
             original_chapter_content = f.read()
 
     # Get editor review content if it exists
@@ -979,7 +1145,7 @@ def chapter_editor(chapter_number):
     chapter_content = ""
     has_review = False
     if os.path.exists(editor_review_file_path):
-        with open(editor_review_file_path, "r") as f:
+        with open(editor_review_file_path, "r", encoding="utf-8") as f:
             chapter_content = f.read()
         has_review = True
 
@@ -1143,7 +1309,7 @@ def save_chapter(chapter_number):
     chapter_path = os.path.join(
         CHAPTERS_DIR, f"chapter_{chapter_number}{TEXT_EXTENSION}"
     )
-    with open(chapter_path, "w") as f:
+    with open(chapter_path, "w", encoding='utf-8') as f:
         f.write(chapter_content)
 
     return jsonify({"success": True})
@@ -1160,7 +1326,7 @@ def save_chapter_editor(chapter_number):
     chapter_path = os.path.join(
         CHAPTERS_DIR, f"chapter_{chapter_number}_editor{TEXT_EXTENSION}"
     )
-    with open(chapter_path, "w") as f:
+    with open(chapter_path, "w", encoding='utf-8') as f:
         f.write(chapter_content)
 
     return jsonify({"success": True})
@@ -1170,7 +1336,7 @@ def save_chapter_editor(chapter_number):
 def save_master_prompt():
     """Save the master prompt to a file."""
     master_prompt = request.form.get("master_prompt", "")
-    with open(MASTER_PROMPT_FILE, "w") as f:
+    with open(MASTER_PROMPT_FILE, "w", encoding='utf-8') as f:
         f.write(master_prompt)
     return jsonify({"success": True})
 
@@ -1289,7 +1455,7 @@ def scene(chapter_number):
         )
         scene_path = os.path.join(scene_dir, f"scene_{scene_count + 1}{TEXT_EXTENSION}")
 
-        with open(scene_path, "w") as f:
+        with open(scene_path, "w", encoding='utf-8') as f:
             f.write(scene_content)
 
         return jsonify({"scene_content": scene_content})
@@ -1308,7 +1474,7 @@ def scene(chapter_number):
             scene_path = os.path.join(scene_dir, scene_file)
             scene_number = int(scene_file.split("_")[1].split(".")[0])
 
-            with open(scene_path, "r") as f:
+            with open(scene_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
                 # Extract a title from the first line or first few words
@@ -1337,7 +1503,7 @@ def save_action_beats(chapter_number):
     action_beats_path = os.path.join(
         CHAPTERS_DIR, f"chapter_{chapter_number}_action_beats{TEXT_EXTENSION}"
     )
-    with open(action_beats_path, "w") as f:
+    with open(action_beats_path, "w", encoding='utf-8') as f:
         f.write(action_beats_content)
 
     return jsonify({"success": True})
@@ -1478,7 +1644,7 @@ def finalize_action_beats_stream(chapter_number):
         action_beats_path = os.path.join(
             CHAPTERS_DIR, f"chapter_{chapter_number}_action_beats{TEXT_EXTENSION}"
         )
-        with open(action_beats_path, "w") as f:
+        with open(action_beats_path, "w", encoding='utf-8') as f:
             f.write(complete_content)
 
         yield f"data: {json.dumps({'content': '[DONE]'})}\n\n"
@@ -1617,7 +1783,7 @@ def finalize_characters_stream():
         # Clean and save characters to file once streaming is complete
         characters_content = complete_content.strip()
 
-        with open(CHARACTERS_FILE, "w") as f:
+        with open(CHARACTERS_FILE, "w", encoding='utf-8') as f:
             f.write(characters_content)
 
         # Send completion marker
@@ -1778,14 +1944,14 @@ def finalize_outline_stream():
         outline_content = complete_content.strip()
 
         # Save to file
-        with open(OUTLINE_FILE, "w") as f:
+        with open(OUTLINE_FILE, "w", encoding='utf-8') as f:
             f.write(outline_content)
 
         # Try to parse chapters
         chapters = parse_outline_to_chapters(outline_content, num_chapters)
 
         # Save structured outline for later use
-        with open(OUTLINE_JSON_FILE, "w") as f:
+        with open(OUTLINE_JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(chapters, f, indent=2)
 
         # Send completion marker
@@ -1910,7 +2076,7 @@ def parse_outline_to_chapters(outline_content, num_chapters):
     print(f"Found {len(chapters)} chapters in the outline")
 
     # Save to the correct filename
-    with open(CHAPTERS_JSON_FILE, "w") as f:
+    with open(CHAPTERS_JSON_FILE, "w", encoding="utf-8") as f:
         json.dump(chapters, f, indent=2)
 
     return chapters
