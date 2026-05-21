@@ -1,6 +1,6 @@
-# AI Book Writer
+# OpenTale - AI Book Writer
 
-A web-based application that guides you through the process of writing a book with AI assistance. The system uses local AI models to help generate world settings, characters, outlines, and complete chapters.
+A web-based application that guides you through the process of writing a book with AI assistance. The system uses AI models (OpenAI-compatible APIs) to help generate world settings, characters, outlines, and complete chapters.
 
 ## Features
 
@@ -12,10 +12,13 @@ A web-based application that guides you through the process of writing a book wi
   - Book outlines with chapter structure
   - Scene generation for individual chapters
   - Full chapter content
-- Local AI model support (compatible with your existing config)
+- Editable configuration via web UI (no manual `.env` file needed)
+- Model selector — fetch available models directly from the API
+- Connection tester — verify your API endpoint is reachable
 - Progress tracking
 - Ability to edit and save generated content
 - All content stored in local files for easy access
+- Multi-project support — work on multiple books simultaneously
 
 ## Architecture
 
@@ -31,47 +34,63 @@ The application consists of:
 - **Prompt Management**: Centralized prompt templates in `prompts.py`
 - **File Storage**: Local storage of all generated content in the `book_output` directory
 
-## Installation
+## Quick Start
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/OpenTale.git
-cd OpenTale
+### Windows
+
+Double-click `start.bat` — it will:
+1. Create a Python virtual environment (`.venv`) if it doesn't exist
+2. Install all dependencies
+3. Launch the web application
+
+Or run from the command line:
+```cmd
+start.bat
 ```
 
-2. Create a virtual environment:
+### Linux / macOS
+
 ```bash
+chmod +x start.sh
+./start.sh
+```
+
+The `start.sh` script does the same as `start.bat` — creates `.venv`, installs dependencies, and runs the app.
+
+### Manual Setup
+
+If you prefer to do things manually:
+
+```bash
+# Create virtual environment
 python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-3. Install dependencies:
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-4. Create a `.env` file in the project root and add your secrets:
-```bash
-cp .env.example .env
-# Open .env and add your API_KEY and BASE_URL
+# Run the app
+python web_app.py
 ```
 
 ## Usage
 
-1. Start the local AI model server according to your `config.py` settings.
+1. Start the web application (see **Quick Start** above).
+2. Open your browser and navigate to:
+   ```
+   http://localhost:5000
+   ```
+3. Go to the **Configuration** page (`/config`) to set up your AI provider:
+   - Enter the **Base URL** (e.g. `https://openrouter.ai/api/v1` or `http://localhost:11434/v1` for Ollama)
+   - Enter your **API Key** (if required)
+   - Click **Test** to verify the connection — the model list will auto-populate on success
+   - Select your preferred **Model**
+   - Adjust temperature, max tokens, etc.
+   - Click **Save Configuration**
 
-2. Run the web application:
-```bash
-python web_app.py
-```
-
-3. Open your browser and navigate to:
-```
-http://localhost:5000
-```
-
-4. Follow the step-by-step process in the web interface:
-   - Create a world setting
+4. Follow the step-by-step writing workflow:
+   - Create a synopsis
+   - Build a world setting
    - Generate characters
    - Create a book outline
    - Work chapter by chapter to generate your book
@@ -80,13 +99,14 @@ http://localhost:5000
 
 The application guides you through a logical book creation process:
 
-1. **World Building**: Define the setting, time period, and environment for your story
-2. **Character Creation**: Generate the main characters for your book
-3. **Outline Generation**: Create a chapter-by-chapter outline of your story
-4. **Chapter Writing**:
-   - Generate individual scenes for a chapter
+1. **Synopsis**: Define the core idea and story direction
+2. **World Building**: Define the setting, time period, and environment for your story
+3. **Character Creation**: Generate the main characters for your book
+4. **Outline Generation**: Create a chapter-by-chapter outline of your story
+5. **Chapter Writing**:
+   - Generate action beats for a chapter
    - Generate a complete chapter
-   - Edit and save your chapters
+   - Edit and refine using the editor agent
    - Proceed to the next chapter
 
 ## Output Structure
@@ -94,30 +114,51 @@ The application guides you through a logical book creation process:
 All generated content is saved in the `book_output` directory:
 ```
 book_output/
-├── world.txt                # World setting
-├── characters.txt           # Character profiles
-├── outline.txt              # Full book outline
-├── outline.json             # Structured outline data
-├── chapters/
-│   ├── chapter_1.txt
-│   ├── chapter_2.txt
-│   └── ...
-│   └── chapter_1_scenes/    # Generated scenes for chapters
-│       ├── scene_1.txt
+├── .active_project           # Currently active project name
+├── (project_name)/
+│   ├── world.txt             # World setting
+│   ├── characters.txt        # Character profiles
+│   ├── synopsis.txt          # Story synopsis
+│   ├── outline.txt           # Full book outline
+│   ├── outline.json          # Structured outline data
+│   ├── chapters.json         # Chapter metadata
+│   ├── master_prompt.txt     # Master writing prompt
+│   ├── settings.json         # Project-specific settings
+│   └── chapters/
+│       ├── chapter_1.txt
+│       ├── chapter_1_editor.txt       # Editor-reviewed version
+│       ├── chapter_1_action_beats.txt # Action beats for the chapter
+│       ├── chapter_2.txt
 │       └── ...
 ```
+
+## Configuration
+
+All AI provider settings are stored in `config.json` in the project root. This file is auto-created with defaults on first run and can be edited at any time via the web UI (`/config` page).
+
+### Configurable Parameters
+
+| Parameter     | Description                                        | Default                          |
+|---------------|----------------------------------------------------|----------------------------------|
+| `base_url`    | API endpoint URL                                   | `https://openrouter.ai/api/v1`   |
+| `api_key`     | API key (stored locally in config.json)            | (empty)                          |
+| `model`       | Model identifier                                   | `google/gemini-2.5-flash`        |
+| `temperature` | Controls randomness (0.0 - 2.0)                    | `0.7`                            |
+| `top_p`       | Nucleus sampling threshold (0.0 - 1.0)             | `1.0`                            |
+| `max_tokens`  | Maximum tokens per response                        | `10000`                          |
+| `seed`        | Random seed for reproducible outputs               | `42`                             |
+| `timeout`     | API request timeout in seconds                     | `1000`                           |
+| `debug`       | Enable prompt debugging (saves prompts to disk)    | `false`                          |
+
+### Changing Projects
+
+You can create and switch between multiple book projects from the web interface using the project selector in the navigation bar.
 
 ## Requirements
 
 - Python 3.8+
-- Flask 2.2.0+
-- AutoGen 0.2.0+
-- Local AI model (as configured in your existing `config.py`)
-- Other dependencies listed in requirements.txt
-
-## Configuration
-
-The system is configured through `config.py` for AI model settings and `prompts.py` for generation prompts. Secrets like `API_KEY` and `BASE_URL` are not stored in `config.py` but are loaded from a `.env` file in the project root.
+- Dependencies listed in requirements.txt
+- An OpenAI-compatible API endpoint (e.g. OpenRouter, Ollama, LM Studio, etc.)
 
 ## Contributing
 
