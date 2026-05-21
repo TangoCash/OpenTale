@@ -892,6 +892,7 @@ def chapter(chapter_number):
         master_prompt = request.form.get("master_prompt", "")
         point_of_view = request.form.get("point_of_view", "Third-person limited")
         tense = request.form.get("tense", "Past tense")
+        min_words = request.form.get("min_words", "5000")
         action_beats = request.form.get("action_beats_content", "")
 
         # Save chapter-specific settings (point_of_view and tense)
@@ -904,17 +905,12 @@ def chapter(chapter_number):
             point_of_view
         )
         settings_to_save["chapters"][str(chapter_number)]["tense"] = tense
+        settings_to_save["chapters"][str(chapter_number)]["min_words"] = min_words
         save_settings(settings_to_save)
 
         # Load foundational book data
         world_theme = get_world_theme()
         characters = get_characters()
-
-        settings = get_settings()
-        chapter_settings_for_length = settings.get("chapters", {}).get(str(chapter_number), {})
-        min_words = chapter_settings_for_length.get(
-            "min_words", settings.get("min_words", 5000)
-        )
 
         # Get context from the previous chapter to ensure continuity
         previous_context = get_previous_chapter_context(chapter_number)
@@ -978,6 +974,7 @@ def chapter(chapter_number):
     chapter_settings = settings.get("chapters", {}).get(str(chapter_number), {})
     point_of_view = chapter_settings.get("point_of_view", "Third-person limited")
     tense = chapter_settings.get("tense", "Past tense")
+    min_words = chapter_settings.get("min_words", "5000")
 
     # Get pagination data for chapter navigation
     chapters_paginated = get_paginated_chapters_from_request(
@@ -995,6 +992,7 @@ def chapter(chapter_number):
         master_prompt=master_prompt,
         point_of_view=point_of_view,
         tense=tense,
+        min_words=min_words
     )
 
 
@@ -1023,6 +1021,7 @@ def _handle_chapter_stream(chapter_number, agent_name):
     master_prompt = data.get("master_prompt", "")
     point_of_view = data.get("point_of_view", "Third-person limited")
     tense = data.get("tense", "Past tense")
+    min_words = data.get("min_words", "5000")
     action_beats = data.get("action_beats_content", "")
     show_prompt = data.get("show_prompt", False)
     chapter_content = data.get("chapter_content", "")  # For editor
@@ -1035,17 +1034,12 @@ def _handle_chapter_stream(chapter_number, agent_name):
         settings_to_save["chapters"][str(chapter_number)] = {}
     settings_to_save["chapters"][str(chapter_number)]["point_of_view"] = point_of_view
     settings_to_save["chapters"][str(chapter_number)]["tense"] = tense
+    settings_to_save["chapters"][str(chapter_number)]["min_words"] = min_words
     save_settings(settings_to_save)
 
     # Load foundational book data
     world_theme = get_world_theme()
     characters = get_characters()
-
-    settings = get_settings()
-    chapter_settings_for_length = settings.get("chapters", {}).get(str(chapter_number), {})
-    min_words = chapter_settings_for_length.get(
-        "min_words", settings.get("min_words", 5000)
-    )
 
     # Get context from the previous chapter to ensure continuity
     previous_context = get_previous_chapter_context(chapter_number)
@@ -1186,6 +1180,7 @@ def chapter_editor(chapter_number):
     chapter_settings = settings.get("chapters", {}).get(str(chapter_number), {})
     point_of_view = chapter_settings.get("point_of_view", "Third-person limited")
     tense = chapter_settings.get("tense", "Past tense")
+    min_words = chapter_settings.get("min_words", "5000")
 
     # Get chapter navigation pagination
     chapters_paginated = get_paginated_chapters_from_request(
@@ -1206,6 +1201,7 @@ def chapter_editor(chapter_number):
         point_of_view=point_of_view,
         tense=tense,
         action_beats_content=action_beats_content,
+        min_words=min_words
     )
 
 
@@ -1373,6 +1369,7 @@ def save_chapter_style(chapter_number):
     data = request.json
     point_of_view = data.get("point_of_view")
     tense = data.get("tense")
+    min_words = data.get("min_words")
 
     settings = get_settings()
     if "chapters" not in settings:
@@ -1384,6 +1381,8 @@ def save_chapter_style(chapter_number):
         settings["chapters"][str(chapter_number)]["point_of_view"] = point_of_view
     if tense is not None:
         settings["chapters"][str(chapter_number)]["tense"] = tense
+    if min_words is not None:
+        settings["chapters"][str(chapter_number)]["min_words"] = min_words
 
     save_settings(settings)
     return jsonify({"success": True})

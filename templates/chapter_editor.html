@@ -93,6 +93,14 @@
                                                     <option value="Present tense" {% if tense == 'Present tense' %}selected{% endif %}>Present tense</option>
                                                 </select>
                                             </div>
+                                           <div class="col-md-6 mb-3">
+                                               <label for="min_words" class="form-label">Minimum Words</label>
+                                               <select class="form-select" id="min_words" name="min_words">
+                                                   <option value="2500" {% if min_words == '2500' %}selected{% endif %}>2500</option>
+                                                   <option value="5000" {% if min_words == '5000' %}selected{% endif %}>5000</option>
+                                                   <option value="7500" {% if min_words == '7500' %}selected{% endif %}>7500</option>
+                                               </select>
+                                           </div>
                                         </div>
                                     </div>
                                 </div>
@@ -302,6 +310,7 @@ $(document).ready(function() {
         const masterPrompt = $('#masterPrompt').val();
         const pointOfView = $('#pointOfView').val();
         const tense = $('#tense').val();
+        const min_words = $('#min_words').val();
         const action_beats_content = $('#actionBeatsEditor-hidden').val();
         const chapterContent = $('#originalChapterContentEditor-hidden').val(); // Use original content for editing
 
@@ -310,6 +319,7 @@ $(document).ready(function() {
             master_prompt: masterPrompt,
             point_of_view: pointOfView,
             tense: tense,
+            min_words: min_words,
             action_beats_content: action_beats_content,
             chapter_content: chapterContent // This is the original content
         };
@@ -516,6 +526,7 @@ $(document).ready(function() {
     const saveWritingStyle = debounce(function() {
         const pointOfView = $('#pointOfView').val();
         const tense = $('#tense').val();
+        const min_words = $('#min_words').val();
 
         $.ajax({
             type: 'POST',
@@ -523,7 +534,8 @@ $(document).ready(function() {
             contentType: 'application/json',
             data: JSON.stringify({
                 point_of_view: pointOfView,
-                tense: tense
+                tense: tense,
+                min_words: min_words
             }),
             success: function() {
                 console.log('Writing style saved.');
@@ -534,7 +546,7 @@ $(document).ready(function() {
         });
     }, 500); // 500ms delay
 
-    $('#pointOfView, #tense').on('change', saveWritingStyle);
+    $('#pointOfView, #tense, #min_words').on('change', saveWritingStyle);
 
     // Show prompt
     $('#showPromptBtn').click(function() {
@@ -548,6 +560,7 @@ $(document).ready(function() {
         const masterPrompt = $('#masterPrompt').val();
         const pointOfView = $('#pointOfView').val();
         const tense = $('#tense').val();
+        const min_words = $('#min_words').val();
         const action_beats_content = $('#actionBeatsEditor-hidden').val();
         const chapterContent = $('#originalChapterContentEditor-hidden').val();
 
@@ -556,6 +569,7 @@ $(document).ready(function() {
             master_prompt: masterPrompt,
             point_of_view: pointOfView,
             tense: tense,
+            min_words: min_words,
             action_beats_content: action_beats_content,
             chapter_content: chapterContent,
             show_prompt: true

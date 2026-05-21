@@ -217,7 +217,7 @@ Provide a comprehensive edit that:
 5. Strengthens dialogue and character interactions
 6. Maintains continuity with established world and plot
 7. Fixes any grammatical or structural issues
-8. Ensures the chapter is at least 5000 words
+8. Ensures the chapter is at least {min_words} words
 
 Return the complete edited chapter.
 """
