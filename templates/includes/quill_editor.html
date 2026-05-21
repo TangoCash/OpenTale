@@ -1,4 +1,4 @@
 {% macro quill_editor(id, name, content, action_beats=None) %}
-    <div id="{{ id }}" class="quill-editor" style="height: 300px;"></div>
+    <div id="{{ id }}" class="quill-editor" style="height: 500px;"></div>
     <input type="hidden" id="{{ id }}-hidden" name="{{ name }}" data-initial-content='{{ content | tojson }}' {% if action_beats %}data-action-beats='{{ action_beats | tojson }}'{% endif %}>
 {% endmacro %}

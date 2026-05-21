@@ -1,73 +1,68 @@
 /* Custom styles for OpenTale */
 
-/* Make textareas bigger for writing */
-textarea.form-control {
-    min-height: 150px;
+/* ===========================
+   Light & Dark Mode Variables
+   =========================== */
+:root {
+    --bg-gradient-color: rgba(255, 255, 255, 0.7);
+    --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    --progress-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    --ql-stats-color: #6c757d;
+    --copy-icon-color: #6c757d;
+    --copy-icon-hover-color: #0d6efd;
+    --copy-icon-hover-bg: rgba(13, 110, 253, 0.1);
 }
 
-/* Add some padding to the main content area */
-main.container {
-    padding-top: 2rem;
-    padding-bottom: 2rem;
+[data-bs-theme="dark"] {
+    --bg-gradient-color: rgba(33, 37, 41, 0.85);
+    --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+    --progress-shadow: 0 2px 5px rgba(0,0,0,0.4);
+    --ql-stats-color: #adb5bd;
+    --copy-icon-color: #adb5bd;
+    --copy-icon-hover-color: #6ea8fe;
+    --copy-icon-hover-bg: rgba(110, 168, 254, 0.15);
 }
 
-/* Improve the progress bar visibility */
-.progress {
-    height: 1.5rem;
-    font-size: 0.9rem;
-    font-weight: bold;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-}
-
-.progress-bar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: width 0.6s ease;
-}
-
-/* Style cards consistently */
-.card {
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    margin-bottom: 1.5rem;
-}
-
-.card-header {
-    font-weight: bold;
-}
-
-/* Chapter navigation styling */
-.list-group-item.active {
-    background-color: #0d6efd;
-    border-color: #0d6efd;
-}
-
-/* Add some hover effect to buttons */
-.btn {
-    transition: all 0.3s ease;
-}
-
-.btn-outline-primary:hover {
-    background-color: #0d6efd;
-    color: white;
-}
-
-/* Ensure footer stays at bottom */
+/* ===========================
+   Body & Background
+   =========================== */
 body {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    background-color: #f8f9fa;
+    background-image: linear-gradient(var(--bg-gradient-color) 1px, transparent 1px),
+                      linear-gradient(90deg, var(--bg-gradient-color) 1px, transparent 1px);
+    background-size: 20px 20px;
 }
 
+[data-bs-theme="dark"] body {
+    background-color: #212529;
+}
+
+/* ===========================
+   Layout
+   =========================== */
 main {
     flex: 1;
+}
+
+main.container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
 }
 
 footer {
     margin-top: auto;
 }
 
-/* Make textareas easier to read when content is long */
+/* ===========================
+   Textareas
+   =========================== */
+textarea.form-control {
+    min-height: 150px;
+}
+
 textarea#chapterContent,
 textarea#outlineContent,
 textarea#worldTheme,
@@ -77,21 +72,66 @@ textarea#charactersContent {
     padding: 1rem;
 }
 
-/* Make loading spinners more visible */
+/* ===========================
+   Progress Bar
+   =========================== */
+.progress {
+    height: 1.5rem;
+    font-size: 0.9rem;
+    font-weight: bold;
+    box-shadow: var(--progress-shadow);
+}
+
+.progress-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: width 0.6s ease;
+}
+
+/* ===========================
+   Cards
+   =========================== */
+.card {
+    box-shadow: var(--card-shadow);
+    margin-bottom: 1.5rem;
+}
+
+.card-header {
+    font-weight: bold;
+}
+
+/* ===========================
+   List Groups
+   =========================== */
+.list-group-item.active {
+    background-color: #0d6efd;
+    border-color: #0d6efd;
+}
+
+/* ===========================
+   Buttons
+   =========================== */
+.btn {
+    transition: all 0.3s ease;
+}
+
+.btn-outline-primary:hover {
+    background-color: #0d6efd;
+    color: white;
+}
+
+/* ===========================
+   Spinners
+   =========================== */
 .spinner-border {
     width: 1.5rem;
     height: 1.5rem;
 }
 
-/* Add a subtle background pattern */
-body {
-    background-color: #f8f9fa;
-    background-image: linear-gradient(rgba(255, 255, 255, 0.7) 1px, transparent 1px),
-                      linear-gradient(90deg, rgba(255, 255, 255, 0.7) 1px, transparent 1px);
-    background-size: 20px 20px;
-} 
-
-/* Quill Editor Styling */
+/* ===========================
+   Quill Editor
+   =========================== */
 .ql-editor {
     font-size: var(--quill-font-size, 16px);
     line-height: 1.6;
@@ -100,46 +140,59 @@ body {
     white-space: pre-wrap;
     word-wrap: break-word;
 }
+
 .ql-editor p {
-    margin-bottom: 1em; /* Adjust the value to control spacing */
+    margin-bottom: 1em;
 }
+
 .ql-toolbar {
     display: flex;
     align-items: center;
 }
+
 .ql-stats-container {
     margin-left: auto;
     padding-right: 10px;
     font-size: 12px;
-    color: #6c757d;
+    color: var(--ql-stats-color);
     vertical-align: middle;
 }
+
 .ql-stat {
     margin-right: 10px;
 }
+
 .ql-stat-value {
     font-weight: bold;
 }
 
-/* Styles for scrollable modal body */
+/* ===========================
+   Modals
+   =========================== */
 .modal-body-scrollable {
-    max-height: calc(100vh - 150px); /* Adjusted for more aggressive scrollbar */
+    max-height: calc(100vh - 150px);
     overflow-y: auto;
 }
 
 .modal-body-scrollable pre {
-    max-height: 100%; /* Ensure pre tag doesn't overflow its parent */
-    overflow-y: auto; /* Add scrollbar to pre tag if content overflows */
-    user-select: text; /* Ensure text is selectable */
+    max-height: 100%;
+    overflow-y: auto;
+    user-select: text;
 }
 
 .modal-body-scrollable pre code {
-    user-select: text; /* Ensure text inside code tag is selectable */
+    user-select: text;
 }
 
-/* Style for copy icon buttons */
+.modal-backdrop {
+    z-index: 1049 !important;
+}
+
+/* ===========================
+   Copy Icon
+   =========================== */
 .copy-icon {
-    color: #6c757d; /* Bootstrap secondary color */
+    color: var(--copy-icon-color);
     font-size: 1.2rem;
     padding: 0.25rem 0.5rem;
     border-radius: 0.25rem;
@@ -147,11 +200,109 @@ body {
 }
 
 .copy-icon:hover {
-    color: #0d6efd; /* Bootstrap primary color */
-    background-color: rgba(13, 110, 253, 0.1); /* Light primary background */
+    color: var(--copy-icon-hover-color);
+    background-color: var(--copy-icon-hover-bg);
 }
 
-/* Ensure modal backdrop is below the modal */
-.modal-backdrop {
-    z-index: 1049 !important;
+/* ===========================
+   Dark mode overrides for Quill
+   =========================== */
+[data-bs-theme="dark"] .ql-toolbar {
+    background-color: #2b3035;
+    border-color: #495057;
+}
+
+[data-bs-theme="dark"] .ql-container {
+    border-color: #495057;
+}
+
+[data-bs-theme="dark"] .ql-editor {
+    background-color: #212529;
+    color: #dee2e6;
+}
+
+[data-bs-theme="dark"] .ql-picker-label,
+[data-bs-theme="dark"] .ql-picker-item {
+    color: #dee2e6;
+}
+
+[data-bs-theme="dark"] .ql-stroke {
+    stroke: #dee2e6;
+}
+
+[data-bs-theme="dark"] .ql-fill {
+    fill: #dee2e6;
+}
+
+[data-bs-theme="dark"] .ql-picker-options {
+    background-color: #2b3035;
+    border-color: #495057;
+}
+
+/* ===========================
+   Dark mode overrides for copy icon in modals
+   =========================== */
+[data-bs-theme="dark"] .copy-icon {
+    color: var(--copy-icon-color);
+}
+
+[data-bs-theme="dark"] .copy-icon:hover {
+    color: var(--copy-icon-hover-color);
+    background-color: var(--copy-icon-hover-bg);
+}
+
+/* ===========================
+   Dark mode override: make <pre>/<code> in modals readable
+   =========================== */
+[data-bs-theme="dark"] .modal-body-scrollable pre code {
+    color: #e9ecef;
+}
+
+/* ===========================
+   Dark mode overrides for bg-light and bg-white
+   =========================== */
+[data-bs-theme="dark"] .bg-light {
+    background-color: #2b3035 !important;
+}
+
+[data-bs-theme="dark"] .bg-white {
+    background-color: #212529 !important;
+}
+
+/* ===========================
+   Footer adapts to dark mode
+   =========================== */
+[data-bs-theme="dark"] footer.bg-light {
+    background-color: #1a1d20 !important;
+    color: #adb5bd;
+}
+
+/* ===========================
+   Dark mode toggle button
+   =========================== */
+.theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: transparent;
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+    font-size: 1.2rem;
+    line-height: 1;
+}
+
+.theme-toggle:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.6);
+}
+
+.theme-toggle:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.6);
+    outline-offset: 2px;
 }

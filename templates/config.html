@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}OpenTale - Configuration{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 offset-md-2">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h2 class="h4 mb-0">Configuration</h2>
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-4">
+                    These settings are loaded from the <code>.env</code> file in the project root.
+                </p>
+
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th scope="col" style="width: 25%;">Parameter</th>
+                            <th scope="col">Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Model</strong></td>
+                            <td><code>{{ settings.config_list[0].model }}</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Base URL</strong></td>
+                            <td><code>{{ settings.config_list[0].base_url }}</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>API Key</strong></td>
+                            <td>
+                                {% if settings.config_list[0].api_key %}
+                                    <span class="text-success">&#9679; Set</span>
+                                {% else %}
+                                    <span class="text-danger">&#10007; Not set</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>Temperature</strong></td>
+                            <td>{{ settings.temperature }}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Top P</strong></td>
+                            <td>{{ settings.top_p }}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Max Tokens</strong></td>
+                            <td>{{ settings.max_tokens }}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Seed</strong></td>
+                            <td>{{ settings.seed }}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Timeout</strong></td>
+                            <td>{{ settings.timeout }}s</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="alert alert-info mt-3">
+                    <h5 class="h6"><i class="bi bi-info-circle"></i> How to change these</h5>
+                    <p class="mb-0 small">
+                        Edit the <code>.env</code> file in the project root directory and restart the application
+                        for changes to take effect.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header bg-success text-white">
+                <h3 class="h5 mb-0">Connection Test</h3>
+            </div>
+            <div class="card-body">
+                <p>Test if the AI API is reachable with the current configuration:</p>
+                <button type="button" class="btn btn-outline-primary" id="testConnectionBtn">
+                    <i class="bi bi-wifi"></i> Test Connection
+                </button>
+                <div id="connectionResult" class="mt-3" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.getElementById('testConnectionBtn')?.addEventListener('click', function() {
+        const resultDiv = document.getElementById('connectionResult');
+        const btn = this;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Testing...';
+        resultDiv.style.display = 'none';
+
+        fetch('/check_connection', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                resultDiv.style.display = 'block';
+                if (data.success) {
+                    resultDiv.className = 'alert alert-success mt-3';
+                    resultDiv.innerHTML = '<i class="bi bi-check-circle"></i> ' + data.message;
+                } else {
+                    resultDiv.className = 'alert alert-danger mt-3';
+                    resultDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> ' + data.message;
+                }
+            })
+            .catch(error => {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'alert alert-danger mt-3';
+                resultDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Connection failed: ' + error;
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-wifi"></i> Test Connection';
+            });
+    });
+</script>
+{% endblock %}

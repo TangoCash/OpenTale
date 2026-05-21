@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,6 +10,14 @@
     <link href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script>
+        (function() {
+            const saved = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = saved || (prefersDark ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-bs-theme', theme);
+        })();
+    </script>
 </head>
 <body>
     <header class="bg-dark text-white p-3">
@@ -18,17 +26,36 @@
                 <a class="navbar-brand d-flex align-items-center" href="/">
                     <h1 class="h3 mb-0">OpenTale</h1>
                 </a>
-                <div class="progress-tracker">
-                    <div class="btn-group" role="group">
-                        <a href="/" class="btn btn-outline-light {% if request.path == '/' %}active{% endif %}">Home</a>
-                        <a href="/synopsis" class="btn btn-outline-light {% if request.path == '/synopsis' %}active{% endif %}">Synopsis</a>
-                        <a href="/world" class="btn btn-outline-light {% if request.path == '/world' %}active{% endif %}">World</a>
-                        <a href="/characters" class="btn btn-outline-light {% if request.path == '/characters' %}active{% endif %}">Characters</a>
-                        <a href="/outline" class="btn btn-outline-light {% if request.path == '/outline' %}active{% endif %}">Outline</a>
-                        {% if chapters %}
-                        <a href="/chapters" class="btn btn-outline-light {% if request.path.startswith('/chapter') %}active{% endif %}">Chapters</a>
-                        {% endif %}
+                <div class="d-flex align-items-center gap-3">
+                    <!-- Project switcher -->
+                    <div class="dropdown">
+                        <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" id="projectDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-book"></i> {{ current_project }}
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="projectDropdown">
+                            {% for p in projects %}
+                            <li><a class="dropdown-item {% if p == current_project %}active{% endif %}" href="#" data-project="{{ p }}">{{ p }}</a></li>
+                            {% endfor %}
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" id="newProjectBtn"><i class="bi bi-plus-circle"></i> New Project...</a></li>
+                        </ul>
                     </div>
+                    <div class="progress-tracker">
+                        <div class="btn-group" role="group">
+                            <a href="/" class="btn btn-outline-light {% if request.path == '/' %}active{% endif %}">Home</a>
+                            <a href="/config" class="btn btn-outline-light {% if request.path == '/config' %}active{% endif %}">Config</a>
+                            <a href="/synopsis" class="btn btn-outline-light {% if request.path == '/synopsis' %}active{% endif %}">Synopsis</a>
+                            <a href="/world" class="btn btn-outline-light {% if request.path == '/world' %}active{% endif %}">World</a>
+                            <a href="/characters" class="btn btn-outline-light {% if request.path == '/characters' %}active{% endif %}">Characters</a>
+                            <a href="/outline" class="btn btn-outline-light {% if request.path == '/outline' %}active{% endif %}">Outline</a>
+                            {% if chapters %}
+                            <a href="/chapters" class="btn btn-outline-light {% if request.path.startswith('/chapter') %}active{% endif %}">Chapters</a>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+                        <i class="bi bi-moon-fill" id="themeIcon"></i>
+                    </button>
                 </div>
             </div>
         </div>
@@ -80,5 +107,79 @@
     <script src="https://unpkg.com/turndown/dist/turndown.js"></script>
     <script src="{{ url_for('static', filename='quill-handler.js') }}"></script>
     <script src="{{ url_for('static', filename='scripts.js') }}"></script>
+    {% block scripts %}{% endblock %}
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const toggle = document.getElementById('themeToggle');
+            const icon = document.getElementById('themeIcon');
+            const html = document.documentElement;
+
+            function updateIcon(theme) {
+                if (icon) {
+                    icon.className = theme === 'dark' ? 'bi bi-sun-fill' : 'bi bi-moon-fill';
+                }
+            }
+
+            // Sync icon on load
+            updateIcon(html.getAttribute('data-bs-theme'));
+
+            if (toggle) {
+                toggle.addEventListener('click', function () {
+                    const current = html.getAttribute('data-bs-theme');
+                    const next = current === 'dark' ? 'light' : 'dark';
+                    html.setAttribute('data-bs-theme', next);
+                    localStorage.setItem('theme', next);
+                    updateIcon(next);
+                });
+            }
+
+            // ---- Project switcher ----
+            const projectLinks = document.querySelectorAll('[data-project]');
+            projectLinks.forEach(function(link) {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const project = this.dataset.project;
+                    const current = '{{ current_project }}';
+                    if (project === current) return;
+                    fetch('/set_project', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({project: project})
+                    })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            alert('Error switching project: ' + (data.error || 'unknown'));
+                        }
+                    });
+                });
+            });
+
+            // New project
+            const newProjectBtn = document.getElementById('newProjectBtn');
+            if (newProjectBtn) {
+                newProjectBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const name = prompt('Enter a name for the new project (book):');
+                    if (!name || !name.trim()) return;
+                    fetch('/create_project', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({project: name.trim()})
+                    })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + (data.error || 'unknown'));
+                        }
+                    });
+                });
+            }
+        });
+    </script>
 </body>
 </html> 
