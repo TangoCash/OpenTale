@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================
-REM Start script for Writingway
+REM Start script for OpenTale
 REM ===========================================
 
 REM Check if the virtual environment exists, create if not.
