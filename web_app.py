@@ -20,7 +20,8 @@ from flask import (
 
 import prompts
 from agents import PROMPT_DEBUGGING_DIR, BookAgents, check_openai_connection
-from config import get_config
+from config import get_config, save_config as save_config_file
+from config import DEFAULT_CONFIG
 
 # ============================================================
 # Book / Project path management
@@ -302,23 +303,44 @@ def index():
 @app.route("/config", methods=["GET"])
 def config():
     """Display config interface"""
+    from config import _load_config_file
     settings = get_config()
+    raw_settings = _load_config_file()
 
     return render_template(
         "config.html",
         settings=settings,
+        raw_settings=raw_settings,
     )
+
+
+@app.route("/save_config", methods=["POST"])
+def save_config():
+    """Save configuration from the editable config form."""
+    from config import save_config as save_config_file
+
+    data = request.json
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    save_config_file(data)
+
+    # Reload the global agent_config so the new settings take effect immediately
+    global agent_config
+    agent_config = get_config()
+
+    return jsonify({"success": True, "message": "Configuration saved."})
 
 
 @app.route("/check_connection", methods=["POST"])
 def check_connection():
     """Test the AI API connection."""
+    data = request.json or {}
+    base_url = data.get("base_url") or agent_config["config_list"][0]["base_url"]
+    api_key = data.get("api_key") or agent_config["config_list"][0]["api_key"]
     try:
         from openai import OpenAI
-        client = OpenAI(
-            base_url=agent_config["config_list"][0]["base_url"],
-            api_key=agent_config["config_list"][0]["api_key"],
-        )
+        client = OpenAI(base_url=base_url, api_key=api_key)
         client.models.list()
         return jsonify({"success": True, "message": "Connection successful! API is reachable."})
     except Exception as e:
@@ -2109,6 +2131,22 @@ def api_paginated_chapters():
     )
 
 
+@app.route("/api/models", methods=["POST"])
+def api_models():
+    """Fetch available models from the configured API endpoint."""
+    data = request.json or {}
+    base_url = data.get("base_url") or agent_config["config_list"][0]["base_url"]
+    api_key = data.get("api_key") or agent_config["config_list"][0]["api_key"]
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=base_url, api_key=api_key)
+        models = client.models.list()
+        model_ids = sorted([m.id for m in models])
+        return jsonify({"success": True, "models": model_ids})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
 @app.route("/api/chapter/<int:chapter_number>", methods=["GET"])
 def api_chapter(chapter_number):
     """API endpoint to get a specific chapter by number."""
@@ -2135,7 +2173,7 @@ if __name__ == "__main__":
     check_openai_connection(agent_config)
 
     # Notify if in debug mode
-    if os.getenv("DEBUG", "False").lower() in ("true", "1", "t"):
+    if str(agent_config.get("debug", False)).lower() in ("true", "1", "t"):
         print("=" * 50)
         print("🚀 CAUTION: DEBUG mode is enabled.")
         print(

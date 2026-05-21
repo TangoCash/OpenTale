@@ -11,78 +11,113 @@
             </div>
             <div class="card-body">
                 <p class="text-muted mb-4">
-                    These settings are loaded from the <code>.env</code> file in the project root.
+                    These settings are stored in <code>config.json</code> in the project root.
                 </p>
 
-                <table class="table table-striped">
-                    <thead>
-                        <tr>
-                            <th scope="col" style="width: 25%;">Parameter</th>
-                            <th scope="col">Value</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td><strong>Model</strong></td>
-                            <td><code>{{ settings.config_list[0].model }}</code></td>
-                        </tr>
-                        <tr>
-                            <td><strong>Base URL</strong></td>
-                            <td><code>{{ settings.config_list[0].base_url }}</code></td>
-                        </tr>
-                        <tr>
-                            <td><strong>API Key</strong></td>
-                            <td>
-                                {% if settings.config_list[0].api_key %}
-                                    <span class="text-success">&#9679; Set</span>
-                                {% else %}
-                                    <span class="text-danger">&#10007; Not set</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        <tr>
-                            <td><strong>Temperature</strong></td>
-                            <td>{{ settings.temperature }}</td>
-                        </tr>
-                        <tr>
-                            <td><strong>Top P</strong></td>
-                            <td>{{ settings.top_p }}</td>
-                        </tr>
-                        <tr>
-                            <td><strong>Max Tokens</strong></td>
-                            <td>{{ settings.max_tokens }}</td>
-                        </tr>
-                        <tr>
-                            <td><strong>Seed</strong></td>
-                            <td>{{ settings.seed }}</td>
-                        </tr>
-                        <tr>
-                            <td><strong>Timeout</strong></td>
-                            <td>{{ settings.timeout }}s</td>
-                        </tr>
-                    </tbody>
-                </table>
+                <form id="configForm">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th scope="col" style="width: 25%;">Parameter</th>
+                                <th scope="col">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Base URL first, with inline Test Connection -->
+                            <tr>
+                                <td><strong>Base URL</strong></td>
+                                <td>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control" name="base_url"
+                                               value="{{ raw_settings.base_url }}" placeholder="http://127.0.0.1:1234/v1"
+                                               id="baseUrlInput">
+                                        <button type="button" class="btn btn-outline-primary" id="testConnectionBtn">
+                                            <i class="bi bi-wifi"></i> Test
+                                        </button>
+                                    </div>
+                                    <div id="connectionResult" class="mt-2" style="display: none;"></div>
+                                </td>
+                            </tr>
+                            <!-- Model select, populated from API -->
+                            <tr>
+                                <td><strong>Model</strong></td>
+                                <td>
+                                    <div class="input-group input-group-sm">
+                                        <select class="form-select" name="model" id="modelSelect">
+                                            <option value="{{ raw_settings.model }}">{{ raw_settings.model }}</option>
+                                        </select>
+                                        <button type="button" class="btn btn-outline-secondary" id="refreshModelsBtn" title="Refresh model list from API">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            <!-- API Key -->
+                            <tr>
+                                <td><strong>API Key</strong></td>
+                                <td>
+                                    <input type="password" class="form-control form-control-sm" name="api_key"
+                                           value="{{ raw_settings.api_key }}" placeholder="sk-or-v1-...">
+                                    <div class="form-check mt-1">
+                                        <input class="form-check-input" type="checkbox" id="showApiKey">
+                                        <label class="form-check-label small" for="showApiKey">Show API key</label>
+                                    </div>
+                                </td>
+                            </tr>
+                            <!-- Temperature -->
+                            <tr>
+                                <td><strong>Temperature</strong></td>
+                                <td>
+                                    <input type="number" class="form-control form-control-sm" name="temperature"
+                                           value="{{ raw_settings.temperature }}" step="0.1" min="0" max="2">
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Top P</strong></td>
+                                <td>
+                                    <input type="number" class="form-control form-control-sm" name="top_p"
+                                           value="{{ raw_settings.top_p }}" step="0.05" min="0" max="1">
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Max Tokens</strong></td>
+                                <td>
+                                    <input type="number" class="form-control form-control-sm" name="max_tokens"
+                                           value="{{ raw_settings.max_tokens }}" step="100" min="1000">
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Seed</strong></td>
+                                <td>
+                                    <input type="number" class="form-control form-control-sm" name="seed"
+                                           value="{{ raw_settings.seed }}">
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Timeout</strong></td>
+                                <td>
+                                    <input type="number" class="form-control form-control-sm" name="timeout"
+                                           value="{{ raw_settings.timeout }}" step="100" min="100">
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Debug</strong></td>
+                                <td>
+                                    <select class="form-select form-select-sm" name="debug">
+                                        <option value="false" {% if not raw_settings.debug %}selected{% endif %}>False</option>
+                                        <option value="true" {% if raw_settings.debug %}selected{% endif %}>True</option>
+                                    </select>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
 
-                <div class="alert alert-info mt-3">
-                    <h5 class="h6"><i class="bi bi-info-circle"></i> How to change these</h5>
-                    <p class="mb-0 small">
-                        Edit the <code>.env</code> file in the project root directory and restart the application
-                        for changes to take effect.
-                    </p>
-                </div>
-            </div>
-        </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save"></i> Save Configuration
+                    </button>
+                </form>
 
-        <div class="card mt-4">
-            <div class="card-header bg-success text-white">
-                <h3 class="h5 mb-0">Connection Test</h3>
-            </div>
-            <div class="card-body">
-                <p>Test if the AI API is reachable with the current configuration:</p>
-                <button type="button" class="btn btn-outline-primary" id="testConnectionBtn">
-                    <i class="bi bi-wifi"></i> Test Connection
-                </button>
-                <div id="connectionResult" class="mt-3" style="display: none;"></div>
+                <div id="saveResult" class="mt-3" style="display: none;"></div>
             </div>
         </div>
     </div>
@@ -91,34 +126,170 @@
 
 {% block scripts %}
 <script>
+    // ---------- Helpers ----------
+    function getCurrentBaseUrl() {
+        return document.querySelector('input[name="base_url"]').value.trim();
+    }
+
+    function getCurrentApiKey() {
+        return document.querySelector('input[name="api_key"]').value.trim();
+    }
+
+    // ---------- Toggle API key visibility ----------
+    document.getElementById('showApiKey')?.addEventListener('change', function() {
+        const input = document.querySelector('input[name="api_key"]');
+        input.type = this.checked ? 'text' : 'password';
+    });
+
+    // ---------- Test Connection inline ----------
     document.getElementById('testConnectionBtn')?.addEventListener('click', function() {
         const resultDiv = document.getElementById('connectionResult');
         const btn = this;
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Testing...';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
         resultDiv.style.display = 'none';
 
-        fetch('/check_connection', { method: 'POST' })
+        const payload = {
+            base_url: getCurrentBaseUrl(),
+            api_key: getCurrentApiKey(),
+        };
+
+        fetch('/check_connection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
             .then(response => response.json())
             .then(data => {
                 resultDiv.style.display = 'block';
                 if (data.success) {
-                    resultDiv.className = 'alert alert-success mt-3';
+                    resultDiv.className = 'alert alert-success py-1 px-2 mb-0 small';
                     resultDiv.innerHTML = '<i class="bi bi-check-circle"></i> ' + data.message;
+                    // Auto-refresh model list after successful connection
+                    document.getElementById('refreshModelsBtn')?.click();
                 } else {
-                    resultDiv.className = 'alert alert-danger mt-3';
+                    resultDiv.className = 'alert alert-danger py-1 px-2 mb-0 small';
                     resultDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> ' + data.message;
                 }
             })
             .catch(error => {
                 resultDiv.style.display = 'block';
-                resultDiv.className = 'alert alert-danger mt-3';
+                resultDiv.className = 'alert alert-danger py-1 px-2 mb-0 small';
                 resultDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Connection failed: ' + error;
             })
             .finally(() => {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-wifi"></i> Test Connection';
+                btn.innerHTML = '<i class="bi bi-wifi"></i> Test';
             });
+    });
+
+    // ---------- Refresh model list from API ----------
+    function populateModelSelect(models) {
+        const select = document.getElementById('modelSelect');
+        const currentValue = select.value;
+        select.innerHTML = '';
+        if (models.length === 0) {
+            select.innerHTML = '<option value="' + currentValue + '">' + currentValue + '</option>';
+            return;
+        }
+        models.forEach(function(model) {
+            const opt = document.createElement('option');
+            opt.value = model;
+            opt.textContent = model;
+            if (model === currentValue) {
+                opt.selected = true;
+            }
+            select.appendChild(opt);
+        });
+        // If current value not in list, keep it as the first option
+        if (!models.includes(currentValue)) {
+            const opt = document.createElement('option');
+            opt.value = currentValue;
+            opt.textContent = currentValue + ' (current)';
+            opt.selected = true;
+            select.prepend(opt);
+        }
+    }
+
+    document.getElementById('refreshModelsBtn')?.addEventListener('click', function() {
+        const btn = this;
+        const select = document.getElementById('modelSelect');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+
+        const payload = {
+            base_url: getCurrentBaseUrl(),
+            api_key: getCurrentApiKey(),
+        };
+
+        fetch('/api/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.models) {
+                    populateModelSelect(data.models);
+                } else {
+                    alert('Failed to fetch models: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                alert('Failed to fetch models: ' + error);
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+            });
+    });
+
+    // ---------- Save configuration ----------
+    document.getElementById('configForm')?.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        const data = {};
+        formData.forEach((value, key) => {
+            if (['temperature', 'top_p', 'max_tokens', 'seed', 'timeout'].includes(key)) {
+                data[key] = parseFloat(value);
+            } else if (key === 'debug') {
+                data[key] = value === 'true';
+            } else {
+                data[key] = value;
+            }
+        });
+
+        const resultDiv = document.getElementById('saveResult');
+        const btn = this.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Saving...';
+        resultDiv.style.display = 'none';
+
+        fetch('/save_config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        })
+        .then(response => response.json())
+        .then(data => {
+            resultDiv.style.display = 'block';
+            if (data.success) {
+                resultDiv.className = 'alert alert-success mt-3';
+                resultDiv.innerHTML = '<i class="bi bi-check-circle"></i> ' + data.message;
+            } else {
+                resultDiv.className = 'alert alert-danger mt-3';
+                resultDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> ' + (data.error || 'Save failed');
+            }
+        })
+        .catch(error => {
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'alert alert-danger mt-3';
+            resultDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Save failed: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-save"></i> Save Configuration';
+        });
     });
 </script>
 {% endblock %}

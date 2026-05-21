@@ -175,3 +175,4 @@ book_output/default/*
 prompt_debugging
 saved
 .vs
+config.json
