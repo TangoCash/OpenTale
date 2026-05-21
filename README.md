@@ -12,7 +12,7 @@ A web-based application that guides you through the process of writing a book wi
   - Book outlines with chapter structure
   - Scene generation for individual chapters
   - Full chapter content
-- Editable configuration via web UI (no manual `.env` file needed)
+- Editable configuration via web UI
 - Model selector — fetch available models directly from the API
 - Connection tester — verify your API endpoint is reachable
 - Progress tracking
