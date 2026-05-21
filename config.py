@@ -15,7 +15,7 @@ def get_config() -> Dict:
     config_list = [
         {
             "model": os.getenv("MODEL", "google/gemini-2.5-flash"),
-            "base_url": os.getenv("BASE_URL", "https://openrouter.ai/api/v1"),
+            "base_url": os.getenv("BASE_URL", "http://127.0.0.1:1234/v1"),
             "api_key": os.getenv("API_KEY"),
         }
     ]
