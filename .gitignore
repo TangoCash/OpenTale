@@ -171,5 +171,7 @@ cython_debug/
 .pypirc
 
 
-book_output/*
+book_output/default/*
 prompt_debugging
+saved
+.vs
