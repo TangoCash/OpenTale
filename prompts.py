@@ -154,14 +154,28 @@ Based on the following:
 ---
 
 Write a complete chapter that:
-1. Follows the outlined plot points and action beats if provided
-2. Maintains consistent character voices and development
-3. Incorporates world-building details naturally
-4. Creates engaging prose with a mix of dialogue, action, and description
-5. Has proper pacing with rising and falling tension
-6. Connects logically to previous and upcoming chapters
+1. Follows the outlined plot points for that chapter and action beats if provided
+2. Connects logically to previous and upcoming chapters, but never including themselves or their plot points!
+3. Maintains consistent character voices and development
+4. Incorporates world-building details naturally
+5. Creates engaging prose with a mix of dialogue, action, and description
+6. Has proper pacing with rising and falling tension
+7. Please make sure that you write the complete scene, do not leave it incomplete
+8. Ensure transitions are smooth and logical
+9. Do not cut off the scene, make sure it has a proper ending
+10. No final conclusion sentence for the chapter
 
-The chapter should be at least 5000 words with a clear beginning, middle, and end structure.
+Length requirement: the chapter MUST be at least {min_words} words.
+If you reach the end of the chapter’s listed events before hitting the minimum, you must expand *within the existing events* (more interiority, richer moment-to-moment detail, dialogue, and sensory grounding). Do NOT advance the timeline.
+Expansion technique (use this to add length without adding new plot):
+- For each major objective (water, shelter, ignition, cordage, first contact, etc.), show at least 3 micro-attempts (attempt → specific failure → revised approach), including the physical cost (pain, cold, fatigue) and the time cost (light fading, hunger).
+- Prefer concrete actions over summary. Avoid skipping hours with a single sentence.
+- Keep the Oracle within its constraints: it has NO external perception. It can only reason from what the POV character explicitly observes/describes.
+CRITICAL BOUNDARY:
+- Do NOT include major plot events that belong to future chapters.
+- If you need more length, expand *within* the current chapter’s listed events (more interiority, richer moment-to-moment detail, dialogue, and sensory grounding), rather than advancing the timeline.
+End the chapter immediately after completing the final listed Key Event / final action beat for THIS chapter.
+Finish with the line: SCENE FINAL: END OF CHAPTER {chapter_number}
 """
 
 # Chapter editing prompt
