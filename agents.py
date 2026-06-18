@@ -1,9 +1,12 @@
-"""Define the API client for book generation system"""
+"""Define the API client for book generation system — powered by LangChain."""
 
 import os
 from typing import Dict, List, Optional
 
-from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+
+import prompts
 
 # Constants
 PROMPT_DEBUGGING_DIR = "prompt_debugging"
@@ -12,9 +15,11 @@ PROMPT_DEBUGGING_DIR = "prompt_debugging"
 def check_openai_connection(agent_config: Dict):
     """Checks if the OpenAI API connection is valid."""
     try:
+        from openai import OpenAI
+        config = agent_config["config_list"][0]
         client = OpenAI(
-            base_url=agent_config["config_list"][0]["base_url"],
-            api_key=agent_config["config_list"][0]["api_key"],
+            base_url=config["base_url"],
+            api_key=config["api_key"],
         )
         # Make a cheap call to list models
         client.models.list()
@@ -27,188 +32,177 @@ def check_openai_connection(agent_config: Dict):
 
 class BookAgents:
     def __init__(self, agent_config: Dict, outline: Optional[List[Dict]] = None):
-        """Initialize with book outline context"""
+        """Initialize with book outline context."""
         self.agent_config = agent_config
         self.outline = outline
-        self.world_elements = {}  # Track described locations/elements
-        self.character_developments = {}  # Track character arcs
+        self.world_elements = {}
+        self.character_developments = {}
         self.debug = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
 
-        # Initialize OpenAI client
-        self.client = OpenAI(
-            base_url=self.agent_config["config_list"][0]["base_url"],
-            api_key=self.agent_config["config_list"][0]["api_key"],
-        )
-        self.model = self.agent_config["config_list"][0]["model"]
+        config = agent_config["config_list"][0]
 
+        # LangChain ChatOpenAI client — unified interface for all LLM calls
+        self.llm = ChatOpenAI(
+            base_url=config["base_url"],
+            api_key=config["api_key"],
+            model=config["model"],
+            temperature=agent_config.get("temperature", 0.7),
+            max_tokens=agent_config.get("max_tokens", 10000),
+        )
+
+        # Streaming-enabled variant (stream=True forces streaming mode)
+        self.streaming_llm = ChatOpenAI(
+            base_url=config["base_url"],
+            api_key=config["api_key"],
+            model=config["model"],
+            temperature=agent_config.get("temperature", 0.7),
+            max_tokens=agent_config.get("max_tokens", 10000),
+        )
+
+        self.system_prompts: Dict[str, str] = {}
+
+    # ------------------------------------------------------------------
+    # Helper: format outline context for system prompts
+    # ------------------------------------------------------------------
     def _format_outline_context(self) -> str:
-        """Format the book outline into a readable context"""
+        """Format the book outline into a readable context string."""
         if not self.outline:
             return ""
-
         context_parts = ["Complete Book Outline:"]
         for chapter in self.outline:
-            context_parts.extend(
-                [
-                    f"\nChapter {chapter['chapter_number']}: {chapter['title']}",
-                    chapter["prompt"],
-                ]
-            )
+            context_parts.extend([
+                f"\nChapter {chapter['chapter_number']}: {chapter['title']}",
+                chapter["prompt"],
+            ])
         return "\n".join(context_parts)
 
-    def _save_debug_messages(
-        self, messages: List[Dict], agent_name: str, request_type: str
-    ):
+    # ------------------------------------------------------------------
+    # Debug helpers
+    # ------------------------------------------------------------------
+    def _save_debug_messages(self, messages: List[Dict], agent_name: str, request_type: str):
         """Saves the request messages for debugging, grouping by role."""
         if not self.debug:
             return
-
-        if not os.path.exists(PROMPT_DEBUGGING_DIR):
-            os.makedirs(PROMPT_DEBUGGING_DIR)
-
-        # Group messages by role to combine content for the same role
-        grouped_messages = {}
-        for message in messages:
-            role = message["role"]
-            content = message["content"]
-            if role not in grouped_messages:
-                grouped_messages[role] = []
-            grouped_messages[role].append(content)
-
-        # Write combined messages to files
-        for role, contents in grouped_messages.items():
-            file_path = os.path.join(
-                PROMPT_DEBUGGING_DIR,
-                f"{agent_name}_{request_type}_{role}.txt",
-            )
-            with open(file_path, "w", encoding="utf-8") as f:
+        os.makedirs(PROMPT_DEBUGGING_DIR, exist_ok=True)
+        grouped = {}
+        for m in messages:
+            role = m["role"]
+            grouped.setdefault(role, []).append(m["content"])
+        for role, contents in grouped.items():
+            path = os.path.join(PROMPT_DEBUGGING_DIR, f"{agent_name}_{request_type}_{role}.txt")
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("\n\n---\n\n".join(contents))
 
-    def _create_debug_stream_wrapper(self, stream, agent_name: str, response_name: str):
-        """Creates a wrapper to save the full response from a stream while streaming."""
+    def _wrap_stream_for_debug(self, stream, agent_name: str, response_name: str):
+        """Generator wrapper that collects chunks and saves the full response for debugging."""
+        if not self.debug:
+            yield from stream
+            return
+        collected = []
+        for chunk in stream:
+            if chunk.content:
+                collected.append(chunk.content)
+            yield chunk
+        path = os.path.join(PROMPT_DEBUGGING_DIR, f"{agent_name}_{response_name}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("".join(collected))
 
-        def stream_wrapper():
-            """A wrapper to save the full response while streaming"""
-            full_response_content = []
-            for chunk in stream:
-                content = chunk.choices[0].delta.content
-                if content:
-                    full_response_content.append(content)
-                yield chunk
+    # ------------------------------------------------------------------
+    # Build system prompt strings with dynamic outline context
+    # ------------------------------------------------------------------
+    def _writer_system(self) -> str:
+        outline = self._format_outline_context()
+        return f"""You are an expert creative writer, a master storyteller who brings scenes to life with breathtaking detail and deep emotional resonance.
 
-            # After the stream is exhausted, save the complete response
-            response_filepath = os.path.join(
-                PROMPT_DEBUGGING_DIR, f"{agent_name}_{response_name}.txt"
-            )
-            with open(response_filepath, "w", encoding="utf-8") as f:
-                f.write("".join(full_response_content))
-
-        return stream_wrapper()
-
-    def create_agents(self, initial_prompt, num_chapters) -> Dict:
-        """Set up system prompts for each agent type"""
-        outline_context = self._format_outline_context()
-
-        # Define system prompts for each agent type
-        self.system_prompts = {
-            "memory_keeper": f"""You are the keeper of the story's continuity and context.
-Your responsibilities:
-1. Track and summarize each chapter's key events
-2. Monitor character development and relationships
-3. Maintain world-building consistency
-4. Flag any continuity issues
+Your mission is to write scenes based on the provided outline context and the user's request, 
+adhering to the following directives and craft rules at all times.
 
 ### Outline Context
-{outline_context}
+{outline}
 
-Format your responses as follows:
-- Start updates with 'MEMORY UPDATE:'
-- List key events with 'EVENT:'
-- List character developments with 'CHARACTER:'
-- List world details with 'WORLD:'
-- Flag issues with 'CONTINUITY ALERT:'
-""",
-            "character_generator": """You are an expert character creator who designs rich, memorable characters.
+---
+### Core Directives (Non-Negotiable Rules)
+1.  **Strict Plot Adherence:** You must follow the provided **Chapter Outline / Action Beats** with absolute precision and in the correct order. Do not add new plot points, deviate from the sequence, or skip any beats. Your task is to bring the provided outline to life.
+2.  **Long-Form Chapter:** Chapters are long-form. If you feel you have covered the beats but the chapter is not long enough, expand *within* the existing events (moment-to-moment detail, dialogue, interiority, sensory grounding). Do not rush.
+3.  **No Writing Ahead:** You are NOT allowed to "pull in" events from future chapters to make a chapter longer.
+4.  **Scene Integrity:** Write a single, complete chapter with a clear beginning, middle, and end as defined by the story beats. Conclude the chapter exactly where the final story beat specifies. Ensure all transitions are smooth and logical.
 
-Your responsibility is creating detailed character profiles for a story.
-When given a world setting and number of characters:
-1. Create unique, interesting characters that fit within the world
-2. Give each character distinct traits, motivations, and backgrounds
-3. Ensure characters have depth and potential for development
-4. Include both protagonists and antagonists as appropriate
+---
+### Craft & Style Rules (Your Authorial Voice)
+*   **Show, Don't Tell:** This is your primary storytelling technique. Reveal character, plot, and world-building through character actions, subtext, body language, and sensory information, not exposition.
+*   **Prose and Cadence:** Create engaging, dynamic prose. Employ a varied sentence structure, mixing short, punchy sentences for tension with longer, descriptive sentences for atmosphere.
+*   **Details Matter:** Use rich, vivid details to immerse the reader. Add a lot of details, and describe the environment and characters where it makes sense.
+*   **Authentic, Purposeful Dialogue:** Dialogue must sound like real people talking. Every line must either reveal character, advance the plot, or build tension. Each character's voice must be distinct and consistent with their profile.
+*   **Grounded Tone:** Avoid clichés, melodrama, and overly sentimental prose. Keep the emotional expression authentic and grounded.
+*   **Forbidden Words:** You are forbidden from using the following words: **peril, fraught, thwart, dire, that, feel/feeling/felt, back, just, then, ail, look, maybe, knew/know**. Use stronger verbs and more descriptive phrasing instead.
 
-Format your output EXACTLY as:
-CHARACTER_PROFILES:
+---
+Always reference the outline and previous content.
+Mark drafts with 'SCENE:' and final versions with 'SCENE FINAL:'
+"""
 
-[CHARACTER NAME 1]:
-- Role: [Main character, supporting character, antagonist, etc.]
-- Age/Species: [Character's age and species]
-- Physical Description: [Detailed appearance]
-- Personality: [Core personality traits]
-- Background: [Character history and origins]
-- Motivations: [What drives the character]
-- Skills/Abilities: [Special talents or powers]
-- Relationships: [Connections to other characters or groups]
-- Arc: [How this character might develop over the story]
+    def _editor_system(self) -> str:
+        outline = self._format_outline_context()
+        return f"""You are an expert editor ensuring quality and consistency.
 
-[CHARACTER NAME 2]:
-[Follow same format as above]
+Your mission is to review and improve the provided chapter content based on the provided outline context and the user's request, 
+adhering to the following directives at all times.
 
-[And so on for all requested characters]
+### Outline Context
+{outline}
 
-Always provide specific, detailed content - never use placeholders.
-Ensure characters fit logically within the established world setting.
-""",
-            "story_planner": """You are an expert story planner. Your task is to create a detailed story synopsis based on a conversation with an author.
+---
+### Core Directives (Non-Negotiable Rules)
+1. Check alignment with outline
+2. Verify character consistency
+3. Maintain world-building rules
+4. Improve prose quality
+5. Return complete edited chapter
+6. Never ask to start the next chapter, as the next step is finalizing this chapter
+7. Each chapter MUST be at least 5000 words.
 
-From the provided conversation, you must extract the following information:
-- **Genre**: The genre of the story.
-- **Premise**: The core idea or setup of the story.
-- **Ending**: The intended conclusion of the story.
-- **Other Information**: Any other relevant details provided by the author.
+Format your responses:
+1. Start critiques with 'FEEDBACK:'
+2. Provide suggestions with 'SUGGEST:'
+3. Return full edited chapter with 'EDITED_SCENE:'
 
-Then, using this information, generate a highly detailed synopsis for the story in the traditional three-act structure. Each act must be clearly labeled. The synopsis should build toward the described ending, include plenty of conflict, and feature a main character.
+---
+Always reference specific outline elements in your feedback.
+"""
 
-The final output should be only the complete synopsis.
-""",
-            "action_beats_generator": """You are an expert in creating detailed action beats for a script.
+    # ------------------------------------------------------------------
+    # Initialize agent system prompts (called externally with context)
+    # ------------------------------------------------------------------
+    def create_agents(self, initial_prompt: str, num_chapters: int):
+        """Set up system prompts for each agent type."""
+        outline_context = self._format_outline_context()
 
-Your responsibility is to take a chapter summary and generate a list of highly detailed action beats.
-When given a chapter summary:
-1. Generate a list of action beats that flesh out the chapter
-2. Always use proper nouns instead of pronouns
-3. Ensure the action beats are highly detailed and suitable for a script
-
-Format your output EXACTLY as:
-ACTION_BEATS:
-- Beat 1: [Detailed description of the action]
-- Beat 2: [Detailed description of the action]
-- Beat 3: [Detailed description of the action]
-
-Always provide specific, detailed content - never use placeholders.
-""",
-            "outline_creator": f"""Generate a detailed {num_chapters}-chapter outline.
+        outline_creator_system = f"""Generate a detailed {num_chapters}-chapter outline.
 
 Start with "OUTLINE:" and end with "END OF OUTLINE"
 
 YOU MUST USE EXACTLY THIS FORMAT FOR EACH CHAPTER - NO DEVIATIONS:
 
-Optional: ### [Act 1]: [Act Title] ([Act Title in local language if applicable])
+Optional: ### [Act 1]: [Act Title]
 
-Chapter 1: [Title] ([Title in local language if applicable])
+Chapter 1: [Title]
 - Key Events:
     * [Event 1]
     * [Event 2]
     * [Event 3]
+    * [Event 4]
+    * [Event 5]
 - Character Developments: [Specific character moments and changes]
 - Setting: [Specific location and atmosphere]
 - Tone: [Specific emotional and narrative tone]
 
-Chapter 2: [Title] ([Title in local language if applicable])
+Chapter 2: [Title]
 - Key Events:
     * [Event 1]
     * [Event 2]
     * [Event 3]
+    * [Event 4]
+    * [Event 5]
 - Character Developments: [Specific character moments and changes]
 - Setting: [Specific location and atmosphere]
 - Tone: [Specific emotional and narrative tone]
@@ -218,15 +212,16 @@ Chapter 2: [Title] ([Title in local language if applicable])
 CRITICAL REQUIREMENTS:
 1. Create EXACTLY {num_chapters} chapters, numbered 1 through {num_chapters} in order
 2. NEVER repeat chapter numbers or restart the numbering
-3. EVERY chapter must have AT LEAST 3 specific Key Events
+3. EVERY chapter must have AT LEAST 5 specific Key Events
 4. Maintain a coherent story flow from Chapter 1 to Chapter {num_chapters}
 5. Use proper indentation with bullet points for Key Events
 6. NO EXCEPTIONS to this format - follow it precisely for all chapters
 
 Initial Premise:
 {initial_prompt}
-""",
-            "world_builder": f"""You are an expert in world-building who creates rich, consistent settings.
+"""
+
+        world_builder_system = f"""You are an expert in world-building who creates rich, consistent settings.
             
 Your role is to establish ALL settings and locations needed for the entire story based on a provided story arc.
 
@@ -260,102 +255,9 @@ WORLD_ELEMENTS:
 [TRANSITIONS]:
 - How settings connect to each other
 - How characters move between locations
-""",
-            "writer": f"""You are an expert creative writer, a master storyteller who brings scenes to life with breathtaking detail and deep emotional resonance.
+"""
 
-Your mission is to write scenes based on the provided outline context and the user's request, 
-adhering to the following directives and craft rules at all times.
-
-### Outline Context
-{outline_context}
-
----
-### Core Directives (Non-Negotiable Rules)
-1.  **Strict Plot Adherence:** You must follow the provided **Chapter Outline / Action Beats** with absolute precision and in the correct order. Do not add new plot points, deviate from the sequence, or skip any beats. Your task is to bring the provided outline to life.
-2.  **Long-Form Chapter:** Chapters are long-form. If you feel you have covered the beats but the chapter is not long enough, expand *within* the existing events (moment-to-moment detail, dialogue, interiority, sensory grounding). Do not rush.
-3.  **No Writing Ahead:** You are NOT allowed to “pull in” events from future chapters to make a chapter longer.
-4.  **Scene Integrity:** Write a single, complete chapter with a clear beginning, middle, and end as defined by the story beats. Conclude the chapter exactly where the final story beat specifies. Ensure all transitions are smooth and logical.
-
----
-### Craft & Style Rules (Your Authorial Voice)
-*   **Show, Don't Tell:** This is your primary storytelling technique. Reveal character, plot, and world-building through character actions, subtext, body language, and sensory information, not exposition.
-*   **Prose and Cadence:** Create engaging, dynamic prose. Employ a varied sentence structure, mixing short, punchy sentences for tension with longer, descriptive sentences for atmosphere.
-*   **Details Matter:** Use rich, vivid details to immerse the reader. Add a lot of details, and describe the environment and characters where it makes sense.
-*   **Authentic, Purposeful Dialogue:** Dialogue must sound like real people talking. Every line must either reveal character, advance the plot, or build tension. Each character's voice must be distinct and consistent with their profile.
-*   **Grounded Tone:** Avoid clichés, melodrama, and overly sentimental prose. Keep the emotional expression authentic and grounded.
-*   **Forbidden Words:** You are forbidden from using the following words: **peril, fraught, thwart, dire, that, feel/feeling/felt, back, just, then, ail, look, maybe, knew/know**. Use stronger verbs and more descriptive phrasing instead.
-
----
-
-Always reference the outline and previous content.
-Mark drafts with 'SCENE:' and final versions with 'SCENE FINAL:'
-""",
-            "editor": f"""You are an expert editor ensuring quality and consistency.
-
-Your mission is to review and improve the provided chapter content based on the provided outline context and the user's request, 
-adhering to the following directives at all times.
-
-### Outline Context
-{outline_context}
-
----
-### Core Directives (Non-Negotiable Rules)
-1. Check alignment with outline
-2. Verify character consistency
-3. Maintain world-building rules
-4. Improve prose quality
-5. Return complete edited chapter
-6. Never ask to start the next chapter, as the next step is finalizing this chapter
-7. Each chapter MUST be at least 5000 words.
-
-Format your responses:
-1. Start critiques with 'FEEDBACK:'
-2. Provide suggestions with 'SUGGEST:'
-3. Return full edited chapter with 'EDITED_SCENE:'
-
----
-
-Always reference specific outline elements in your feedback.
-""",
-            # Add a special system prompt for conversational world building
-            "world_builder_chat": """You are a collaborative, creative world-building assistant helping an author develop a rich, detailed world for their book.
-
-Your approach:
-1. Ask thoughtful questions about their world ideas
-2. Offer creative suggestions that build on their ideas
-3. Help them explore different aspects of world-building:
-    - Geography and physical environment
-    - Culture and social structures
-    - History and mythology
-    - Technology or magic systems
-    - Political systems or factions
-    - Economy and resources
-4. Maintain a friendly, conversational tone
-5. Keep track of their preferences and established world elements
-6. Gently guide them toward creating a coherent, interesting world
-
-When they're ready to finalize, you'll help organize their ideas into a comprehensive world setting document.
-""",
-            # Add a special system prompt for conversational action beats building
-            "action_beats_chat": """You are a collaborative, creative assistant helping an author brainstorm and refine action beats for a chapter.
-
-Your approach during this brainstorming phase:
-1. Focus on DISCUSSING action beat ideas, not generating the complete list yet.
-2. Help explore different action sequences, character movements, and plot advancements.
-3. Ask thoughtful questions about their vision for the action beats.
-4. Offer suggestions that build on their ideas, including:
-    - Potential dynamic actions or conflicts.
-    - Ways to integrate character development into action.
-    - Pacing and tension within action sequences.
-    - Visual and sensory details for the action.
-5. Maintain a friendly, conversational tone.
-6. Help them think through different action beat options.
-7. NEVER generate a full list of action beats during this chat phase.
-
-IMPORTANT: This is a brainstorming conversation. DO NOT generate the formal action beats until the author is ready to finalize.
-""",
-            # Add a special system prompt for conversational outline brainstorming
-            "outline_creator_chat": f"""You are a collaborative, creative story development assistant helping an author brainstorm and develop their book outline.
+        outline_creator_chat_system = f"""You are a collaborative, creative story development assistant helping an author brainstorm and develop their book outline.
 
 Your approach during this brainstorming phase:
 1. Focus on DISCUSSING story ideas, not generating the complete outline yet
@@ -375,732 +277,378 @@ Your approach during this brainstorming phase:
 IMPORTANT: This is a brainstorming conversation. DO NOT generate the formal outline until the author is ready to finalize.
 
 The book has {num_chapters} chapters total, but during this chat focus on story elements, not chapter structure.
-""",
-            # Add a special system prompt for conversational synopsis brainstorming
-            "story_synopsis_chat": """You are a collaborative, creative story development assistant helping an author brainstorm and develop their book synopsis.
+"""
 
-Your primary goal is to guide the author to define three key elements for their story:
-1.  **Genre**: What kind of story is it (e.g., fantasy, sci-fi, thriller, romance)?
-2.  **Premise**: What is the core idea or setup of the story?
-3.  **Ending**: How does the story conclude?
-
-Your approach:
-*   Start by asking the author for the **genre** of their story.
-*   Once the genre is provided, ask for the **premise**.
-*   After the premise, ask for the **ending**.
-*   You can also ask for "other information" to enrich the synopsis.
-*   Offer creative suggestions and ask clarifying questions to help them flesh out these elements.
-*   Maintain a friendly, conversational tone.
-*   NEVER generate a full synopsis during this chat phase. This is for brainstorming only.
-
-After identifying an element, **ALWAYS continue the conversation by asking further questions** to help the user refine their ideas or move on to the next key element (premise after genre, ending after premise, etc.). Do not stop at just identifying the element.
-
-When they're ready to finalize, you'll help organize their ideas into a overview with genre, premise and ending.
-""",
-            # Add a special system prompt for inline writing
-            "inline_writer": """You are an expert creative writer — a master storyteller who brings scenes to life with immersive detail, emotional subtlety, and narrative precision.
-
-Your task is to write or revise narrative text in a way that follows these core storytelling principles:
-
----
-### Craft & Style Rules (Your Authorial Voice)
-
-* **Show, Don’t Tell:** Prioritize subtext, action, and sensory cues over exposition. Reveal characters and world through what they do, say, and notice — not what is explained.
-* **Prose and Cadence:** Use varied sentence structure. Short, sharp sentences build tension; longer, descriptive ones evoke atmosphere and introspection.
-* **Details Matter:** Describe environments, physical gestures, and internal states with vivid, purposeful detail that serves character or tone.
-* **Authentic, Purposeful Dialogue:** Dialogue must sound natural and distinct to each character. Every line should reveal character, escalate tension, or move the plot forward.
-* **Grounded Emotion:** Avoid melodrama or sentimentality. Emotional moments should be honest, restrained, and earned through context.
-* **Banned Words:** Avoid the following: **peril, fraught, thwart, dire, that, feel/feeling/felt, back, just, then, ail, look, maybe, knew/know**. Replace them with stronger, more specific language.
-* **Enhance sensory details**: Describe the scene with more senses - sight, sound, smell, touch, and even taste when appropriate. This will help immerse readers in the moment.
-""",
-            # Add specific inline writer prompts
-            "inline_reviser": "You are a creative writer who revises narrative text to improve clarity, tone, and flow while preserving intent.",
-            "inline_continuer": "You are a creative writer who continues narrative text in the same tone and voice without repeating content.",
+        self.system_prompts = {
+            "memory_keeper": prompts.SYSTEM_PROMPTS["memory_keeper"],
+            "character_generator": prompts.SYSTEM_PROMPTS["character_generator"],
+            "story_planner": prompts.SYSTEM_PROMPTS["story_planner"],
+            "action_beats_generator": prompts.SYSTEM_PROMPTS["action_beats_generator"],
+            "action_beats_chat": prompts.SYSTEM_PROMPTS["action_beats_chat"],
+            "world_builder_chat": prompts.SYSTEM_PROMPTS["world_builder_chat"],
+            "story_synopsis_chat": prompts.SYSTEM_PROMPTS["story_synopsis_chat"],
+            "inline_writer": prompts.SYSTEM_PROMPTS["inline_writer"],
+            "inline_reviser": prompts.SYSTEM_PROMPTS["inline_reviser"],
+            "inline_continuer": prompts.SYSTEM_PROMPTS["inline_continuer"],
+            # Dynamic prompts (use outline context)
+            "writer": self._writer_system(),
+            "editor": self._editor_system(),
+            "outline_creator": outline_creator_system,
+            "world_builder": world_builder_system,
+            "outline_creator_chat": outline_creator_chat_system,
         }
 
-        # Save the raw system prompts to a file for debugging
+        # Debug: save all prompts
         if self.debug:
-            if not os.path.exists(PROMPT_DEBUGGING_DIR):
-                os.makedirs(PROMPT_DEBUGGING_DIR)
-            for agent_name, prompt_content in self.system_prompts.items():
-                file_path = os.path.join(
-                    PROMPT_DEBUGGING_DIR, f"{agent_name}_prompt.txt"
-                )
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(prompt_content)
+            os.makedirs(PROMPT_DEBUGGING_DIR, exist_ok=True)
+            for agent_name, content in self.system_prompts.items():
+                path = os.path.join(PROMPT_DEBUGGING_DIR, f"{agent_name}_prompt.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
 
-        # Return empty dict since we're not using actual agent objects anymore
-        return {}
-
+    # ==================================================================
+    # Core generation: non-streaming
+    # ==================================================================
     def generate_content(self, agent_name: str, prompt: str) -> str:
-        """Generate content using the OpenAI API with the specified agent system prompt"""
+        """Generate content using the LLM with the specified agent system prompt."""
         if agent_name not in self.system_prompts:
             raise ValueError(
                 f"Agent '{agent_name}' not found. Available agents: {list(self.system_prompts.keys())}"
             )
 
-        # Create the messages array with system prompt and user message
-        messages = [
-            {"role": "system", "content": self.system_prompts[agent_name]},
-            {"role": "user", "content": prompt},
+        system_text = self.system_prompts[agent_name]
+        msgs = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=prompt),
         ]
-
-        # Save the messages for debugging
-        self._save_debug_messages(messages, agent_name, "request")
-
-        # Call the API
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            max_tokens=self.agent_config.get("max_tokens", 10000),
+        self._save_debug_messages(
+            [{"role": "system", "content": system_text}, {"role": "user", "content": prompt}],
+            agent_name, "request"
         )
 
-        # Extract the response
-        response = completion.choices[0].message.content
+        response = self.llm.invoke(msgs)
+        content = response.content
 
-        # Save the raw response for debugging
         if self.debug:
-            response_filepath = os.path.join(
-                PROMPT_DEBUGGING_DIR, f"{agent_name}_response.txt"
-            )
-            with open(response_filepath, "w", encoding="utf-8") as f:
-                f.write(response)
+            response_path = os.path.join(PROMPT_DEBUGGING_DIR, f"{agent_name}_response.txt")
+            with open(response_path, "w", encoding="utf-8") as f:
+                f.write(content)
 
-        # Disable the clean-up logic for now
-        # # Clean up the response based on agent type
-        # if agent_name == "outline_creator":
-        #     # Extract just the outline part
-        #     start = response.find("OUTLINE:")
-        #     end = response.find("END OF OUTLINE")
-        #     if start != -1 and end != -1:
-        #         cleaned_response = response[start : end + len("END OF OUTLINE")]
-        #         return cleaned_response
-        # elif agent_name == "writer":
-        #     # Handle writer's scene format
-        #     if "SCENE FINAL:" in response:
-        #         parts = response.split("SCENE FINAL:")
-        #         if len(parts) > 1:
-        #             return parts[1].strip()
-        # elif agent_name == "world_builder":
-        #     # Extract the world elements part
-        #     start = response.find("WORLD_ELEMENTS:")
-        #     if start != -1:
-        #         return response[start:].strip()
-        #     else:
-        #         # Try to find any content that looks like world-building
-        #         for marker in [
-        #             "Time Period",
-        #             "Setting:",
-        #             "Locations:",
-        #             "Major Locations",
-        #         ]:
-        #             if marker in response:
-        #                 return response
-        # elif agent_name == "story_planner":
-        #     # Extract the story arc part
-        #     start = response.find("STORY_ARC:")
-        #     if start != -1:
-        #         return response[start:].strip()
-        # elif agent_name == "character_generator":
-        #     # Extract the character profiles part
-        #     start = response.find("CHARACTER_PROFILES:")
-        #     if start != -1:
-        #         return response[start:].strip()
-        #     else:
-        #         # Try to find any content that looks like character profiles
-        #         for marker in [
-        #             "Character 1:",
-        #             "Main Character:",
-        #             "Protagonist:",
-        #             "CHARACTER_PROFILES",
-        #         ]:
-        #             if marker in response:
-        #                 return response
+        return content
 
-        return response
-
+    # ==================================================================
+    # Core generation: streaming
+    # ==================================================================
     def generate_content_stream(self, agent_name: str, prompt: str):
-        """Generate content using the OpenAI API with the specified agent system prompt (streaming)"""
+        """Generate content using the LLM in streaming mode."""
         if agent_name not in self.system_prompts:
             raise ValueError(
                 f"Agent '{agent_name}' not found. Available agents: {list(self.system_prompts.keys())}"
             )
 
-        messages = [
-            {"role": "system", "content": self.system_prompts[agent_name]},
-            {"role": "user", "content": prompt},
+        system_text = self.system_prompts[agent_name]
+        msgs = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=prompt),
         ]
-
-        # Save the messages for debugging
-        self._save_debug_messages(messages, agent_name, "stream_request")
-
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
+        self._save_debug_messages(
+            [{"role": "system", "content": system_text}, {"role": "user", "content": prompt}],
+            agent_name, "stream_request"
         )
 
+        stream = self.streaming_llm.stream(msgs)
         if not self.debug:
             return stream
+        return self._wrap_stream_for_debug(stream, agent_name, "stream_response")
 
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(stream, agent_name, "stream_response")
+    # ==================================================================
+    # Chat-style generation (streaming) — generic helper
+    # ==================================================================
+    def _chat_stream(
+        self,
+        agent_key: str,
+        chat_history: List[Dict],
+        user_message: str,
+        debug_name: str,
+        extra_system_context: Optional[str] = None,
+    ):
+        """Generic streaming chat response using LangChain messages."""
+        msgs = [SystemMessage(content=self.system_prompts[agent_key])]
 
-    def generate_chat_response_world(self, chat_history, topic, user_message) -> str:
-        """Generate a chat response based on conversation history"""
-        # Format the messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["world_builder_chat"]}
-        ]
+        if extra_system_context:
+            msgs.append(SystemMessage(content=extra_system_context))
 
-        # Add conversation history
+        # Build LangChain Message list from chat_history
         for entry in chat_history:
-            role = "user" if entry["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": entry["content"]})
+            if entry["role"] == "user":
+                msgs.append(HumanMessage(content=entry["content"]))
+            else:
+                msgs.append(AIMessage(content=entry["content"]))
 
-        # Save the messages for debugging
-        self._save_debug_messages(messages, "world_builder_chat", "chat_request")
+        msgs.append(HumanMessage(content=user_message))
 
-        # Call the API
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            max_tokens=self.agent_config.get("max_tokens", 10000),
+        # Debug save (raw dicts for debug file)
+        raw_msgs = [{"role": m.type, "content": m.content} for m in msgs]
+        self._save_debug_messages(raw_msgs, agent_key, debug_name)
+
+        stream = self.streaming_llm.stream(msgs)
+        if not self.debug:
+            return stream
+        return self._wrap_stream_for_debug(stream, agent_key, debug_name.replace("_request", "_response"))
+
+    # ------------------------------------------------------------------
+    # World building chat (streaming)
+    # ------------------------------------------------------------------
+    def generate_chat_response_world(self, chat_history, topic, user_message) -> str:
+        """Generate a non-streaming chat response for world building."""
+        msgs = [SystemMessage(content=self.system_prompts["world_builder_chat"])]
+        for entry in chat_history:
+            role = HumanMessage if entry["role"] == "user" else AIMessage
+            msgs.append(role(content=entry["content"]))
+        self._save_debug_messages(
+            [{"role": m.type, "content": m.content} for m in msgs],
+            "world_builder_chat", "chat_request"
         )
-
-        # Extract the response
-        return completion.choices[0].message.content
+        return self.llm.invoke(msgs).content
 
     def generate_chat_response_world_stream(self, chat_history, topic, user_message):
-        """Generate a streaming chat response based on conversation history"""
-        # Format the messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["world_builder_chat"]}
-        ]
-
-        # Add conversation history
-        for entry in chat_history:
-            role = "user" if entry["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": entry["content"]})
-
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
-
-        # Save the messages for debugging
-        self._save_debug_messages(messages, "world_builder_chat", "chat_stream_request")
-
-        # Call the API with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,  # Enable streaming
-            max_tokens=self.agent_config.get("max_tokens", 10000),
+        """Streaming chat for world building."""
+        return self._chat_stream(
+            "world_builder_chat", chat_history, user_message,
+            "chat_stream_request"
         )
 
-        if not self.debug:
-            return stream
-
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "world_builder_chat", "chat_stream_response"
-        )
-
+    # ------------------------------------------------------------------
+    # Synopsis chat (streaming)
+    # ------------------------------------------------------------------
     def generate_chat_response_synopsis_stream(self, chat_history, topic, user_message):
-        """Generate a streaming chat response about synopsis building."""
-        # Format the messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["story_synopsis_chat"]}
-        ]
-
-        # Add conversation history
-        for entry in chat_history:
-            role = "user" if entry["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": entry["content"]})
-
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
-
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "story_synopsis_chat", "chat_synopsis_stream_request"
-        )
-
-        # Call the API with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,  # Enable streaming
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
-        if not self.debug:
-            return stream
-
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "story_synopsis_chat", "chat_synopsis_stream_response"
+        """Streaming chat for synopsis building."""
+        return self._chat_stream(
+            "story_synopsis_chat", chat_history, user_message,
+            "chat_synopsis_stream_request"
         )
 
     def generate_final_synopsis_stream(self, chat_history, topic):
-        """Generate the final synopsis based on the chat history using streaming."""
-        # Format messages for the API call
-        messages = [{"role": "system", "content": self.system_prompts["story_planner"]}]
+        """Generate final synopsis from chat history (streaming)."""
+        msgs = [SystemMessage(content=self.system_prompts["story_planner"])]
 
-        # Add conversation context from chat history
         for message in chat_history:
             if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
+                msgs.append(HumanMessage(content=message["content"]))
             else:
-                messages.append({"role": "assistant", "content": message["content"]})
+                msgs.append(AIMessage(content=message["content"]))
 
-        # Add the final instruction to create the complete synopsis
-        messages.append(
-            {
-                "role": "user",
-                "content": f"Based on our conversation about '{topic}', please create a comprehensive and detailed synopsis. Extract the genre, premise, and ending, and then generate the full synopsis in a traditional three-act structure. This will be the final synopsis for the book.",
-            }
-        )
+        msgs.append(HumanMessage(content=(
+            f"Based on our conversation about '{topic}', please create a comprehensive and detailed "
+            "synopsis. Extract the genre, premise, and ending, and then generate the full synopsis "
+            "in a traditional three-act structure. This will be the final synopsis for the book."
+        )))
 
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "story_planner", "final_synopsis_stream_request"
-        )
+        raw_msgs = [{"role": m.type, "content": m.content} for m in msgs]
+        self._save_debug_messages(raw_msgs, "story_planner", "final_synopsis_stream_request")
 
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
+        stream = self.streaming_llm.stream(msgs)
         if not self.debug:
             return stream
+        return self._wrap_stream_for_debug(stream, "story_planner", "final_synopsis_stream_response")
 
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "story_planner", "final_synopsis_stream_response"
-        )
-
+    # ------------------------------------------------------------------
+    # Final world settings
+    # ------------------------------------------------------------------
     def generate_final_world(self, chat_history, topic) -> str:
-        """Generate final world setting based on chat history"""
-        # Format the messages for the API call
-        messages = [
-            {
-                "role": "system",
-                "content": """You are an expert world-building specialist.
-    Based on the entire conversation with the user, create a comprehensive, well-structured world setting document.
-    
-    Format your response as:
-    WORLD_ELEMENTS:
-    
-    1. Time period and setting: [detailed description]
-    2. Major locations: [detailed description of each key location]
-    3. Cultural/historical elements: [key cultural and historical aspects]
-    4. Technology/magical elements: [if applicable]
-    5. Social/political structures: [governments, factions, etc.]
-    6. Environment and atmosphere: [natural world aspects]
-    
-    Make this a complete, cohesive reference document that covers all important aspects of the world
-    mentioned in the conversation. Add necessary details to fill any gaps, while staying true to
-    everything established in the chat history.
-""",
-            }
+        """Generate final world setting (non-streaming)."""
+        msgs = [
+            SystemMessage(content="""You are an expert world-building specialist.
+Based on the entire conversation with the user, create a comprehensive, well-structured world setting document.
+
+Format your response as:
+WORLD_ELEMENTS:
+
+1. Time period and setting: [detailed description]
+2. Major locations: [detailed description of each key location]
+3. Cultural/historical elements: [key cultural and historical aspects]
+4. Technology/magical elements: [if applicable]
+5. Social/political structures: [governments, factions, etc.]
+6. Environment and atmosphere: [natural world aspects]
+
+Make this a complete, cohesive reference document that covers all important aspects of the world
+mentioned in the conversation. Add necessary details to fill any gaps, while staying true to
+everything established in the chat history.
+""")
         ]
 
-        # Add conversation history
         for entry in chat_history:
-            role = "user" if entry["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": entry["content"]})
+            role = HumanMessage if entry["role"] == "user" else AIMessage
+            msgs.append(role(content=entry["content"]))
 
-        # Add a final instruction to generate the world setting
-        messages.append(
-            {
-                "role": "user",
-                "content": f"Please create the final, comprehensive world setting document for my book about '{topic}' based on our conversation.",
-            }
-        )
+        msgs.append(HumanMessage(content=(
+            f"Please create the final, comprehensive world setting document for my book about "
+            f"'{topic}' based on our conversation."
+        )))
 
-        # Save the messages for debugging
         self._save_debug_messages(
-            messages, "world_builder_specialist", "final_world_request"
+            [{"role": m.type, "content": m.content} for m in msgs],
+            "world_builder_specialist", "final_world_request"
         )
 
-        # Call the API
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
-        # Extract the response
-        response = completion.choices[0].message.content
-
-        # Ensure it has the WORLD_ELEMENTS header for consistency
+        response = self.llm.invoke(msgs).content
         if "WORLD_ELEMENTS:" not in response:
             response = "WORLD_ELEMENTS:\n\n" + response
-
         return response
 
     def generate_final_world_stream(self, chat_history, topic):
-        """Generate the final world setting based on the chat history using streaming."""
-        # Format messages for the API call
-        messages = [{"role": "system", "content": self.system_prompts["world_builder"]}]
+        """Generate final world setting (streaming)."""
+        msgs = [SystemMessage(content=self.system_prompts["world_builder"])]
 
-        # Add conversation context from chat history
         for message in chat_history:
             if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
+                msgs.append(HumanMessage(content=message["content"]))
             else:
-                messages.append({"role": "assistant", "content": message["content"]})
+                msgs.append(AIMessage(content=message["content"]))
 
-        # Add the final instruction to create the complete world setting
-        messages.append(
-            {
-                "role": "user",
-                "content": f"Based on our conversation about '{topic}', please create a comprehensive and detailed world setting. Format it with clear sections for different aspects of the world (geography, magic/technology, culture, etc.). This will be the final world setting for the book.",
-            }
-        )
+        msgs.append(HumanMessage(content=(
+            f"Based on our conversation about '{topic}', please create a comprehensive and detailed "
+            "world setting. Format it with clear sections for different aspects of the world "
+            "(geography, magic/technology, culture, etc.). This will be the final world setting for the book."
+        )))
 
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "world_builder", "final_world_stream_request"
-        )
+        raw_msgs = [{"role": m.type, "content": m.content} for m in msgs]
+        self._save_debug_messages(raw_msgs, "world_builder", "final_world_stream_request")
 
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
+        stream = self.streaming_llm.stream(msgs)
         if not self.debug:
             return stream
+        return self._wrap_stream_for_debug(stream, "world_builder", "final_world_stream_response")
 
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "world_builder", "final_world_stream_response"
-        )
-
+    # ------------------------------------------------------------------
+    # World / Character tracking helpers
+    # ------------------------------------------------------------------
     def update_world_element(self, element_name: str, description: str) -> None:
-        """Update a world element description"""
         self.world_elements[element_name] = description
 
-    def update_character_development(
-        self, character_name: str, development: str
-    ) -> None:
-        """Update a character's development"""
-        if character_name not in self.character_developments:
-            self.character_developments[character_name] = []
-        self.character_developments[character_name].append(development)
+    def update_character_development(self, character_name: str, development: str) -> None:
+        self.character_developments.setdefault(character_name, []).append(development)
 
     def get_world_context(self) -> str:
-        """Get a formatted string of all world elements"""
         if not self.world_elements:
             return ""
-
         elements = ["WORLD ELEMENTS:"]
         for name, desc in self.world_elements.items():
             elements.append(f"\n{name}:\n{desc}")
-
         return "\n".join(elements)
 
     def get_character_context(self) -> str:
-        """Get a formatted string of all character developments"""
         if not self.character_developments:
             return ""
-
         developments = ["CHARACTER DEVELOPMENTS:"]
         for name, devs in self.character_developments.items():
             developments.append(f"\n{name}:")
             for i, dev in enumerate(devs, 1):
                 developments.append(f"{i}. {dev}")
-
         return "\n".join(developments)
 
-    def generate_chat_response_characters(
-        self, chat_history, world_theme, user_message
-    ):
-        """Generate a chat response about character creation."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["character_generator"]}
-        ]
+    # ------------------------------------------------------------------
+    # Character chat
+    # ------------------------------------------------------------------
+    def generate_chat_response_characters(self, chat_history, world_theme, user_message) -> str:
+        """Non-streaming character chat."""
+        msgs = [SystemMessage(content=self.system_prompts["character_generator"])]
+        msgs.append(SystemMessage(content=f"The book takes place in the following world:\n\n{world_theme}"))
+        for message in chat_history:
+            role = HumanMessage if message["role"] == "user" else AIMessage
+            msgs.append(role(content=message["content"]))
+        msgs.append(HumanMessage(content=user_message))
 
-        # Add world theme context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"The book takes place in the following world:\n\n{world_theme}",
-            }
+        self._save_debug_messages(
+            [{"role": m.type, "content": m.content} for m in msgs],
+            "character_generator", "chat_characters_request"
+        )
+        return self.llm.invoke(msgs).content
+
+    def generate_chat_response_characters_stream(self, chat_history, world_theme, user_message):
+        """Streaming character chat."""
+        return self._chat_stream(
+            "character_generator", chat_history, user_message,
+            "chat_characters_stream_request",
+            extra_system_context=f"The book takes place in the following world:\n\n{world_theme}",
         )
 
-        # Add conversation context from chat history
+    def generate_final_characters_stream(self, chat_history, world_theme, num_characters=3):
+        """Generate final character profiles (streaming)."""
+        msgs = [SystemMessage(content=self.system_prompts["character_generator"])]
+        msgs.append(SystemMessage(content=f"The book takes place in the following world:\n\n{world_theme}"))
+
         for message in chat_history:
             if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
+                msgs.append(HumanMessage(content=message["content"]))
             else:
-                messages.append({"role": "assistant", "content": message["content"]})
+                msgs.append(AIMessage(content=message["content"]))
 
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
+        msgs.append(HumanMessage(content=(
+            f"Based on our conversation, please create {num_characters} detailed character profiles "
+            "for the book. Format each character with Name, Role, Physical Description, Background, "
+            "Personality, and Goals/Motivations. This will be the final character list for the book."
+        )))
 
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "character_generator", "chat_characters_request"
-        )
+        raw_msgs = [{"role": m.type, "content": m.content} for m in msgs]
+        self._save_debug_messages(raw_msgs, "character_generator", "final_characters_stream_request")
 
-        # Make the API call
-        response = (
-            self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.agent_config.get("temperature", 0.7),
-                max_tokens=self.agent_config.get("max_tokens", 10000),
-            )
-            .choices[0]
-            .message.content
-        )
-
-        return response
-
-    def generate_chat_response_characters_stream(
-        self, chat_history, world_theme, user_message
-    ):
-        """Generate a streaming chat response about character creation."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["character_generator"]}
-        ]
-
-        # Add world theme context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"The book takes place in the following world:\n\n{world_theme}",
-            }
-        )
-
-        # Add conversation context from chat history
-        for message in chat_history:
-            if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
-            else:
-                messages.append({"role": "assistant", "content": message["content"]})
-
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
-
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "character_generator", "chat_characters_stream_request"
-        )
-
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
+        stream = self.streaming_llm.stream(msgs)
         if not self.debug:
             return stream
+        return self._wrap_stream_for_debug(stream, "character_generator", "final_characters_stream_response")
 
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "character_generator", "chat_characters_stream_response"
-        )
-
-    def generate_final_characters_stream(
-        self, chat_history, world_theme, num_characters=3
-    ):
-        """Generate the final character profiles based on chat history using streaming."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["character_generator"]}
-        ]
-
-        # Add world theme context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"The book takes place in the following world:\n\n{world_theme}",
-            }
-        )
-
-        # Add conversation context from chat history
+    # ------------------------------------------------------------------
+    # Outline chat
+    # ------------------------------------------------------------------
+    def generate_chat_response_outline(self, chat_history, world_theme, characters, synopsis, user_message) -> str:
+        """Non-streaming outline chat."""
+        msgs = [SystemMessage(content=self.system_prompts["outline_creator_chat"])]
+        msgs.append(SystemMessage(content=(
+            f"The book takes place in the following world:\n\n{world_theme}\n\n"
+            f"The characters include:\n\n{characters}\n\n"
+            f"The Story Synopsis is:\n\n{synopsis}"
+        )))
         for message in chat_history:
-            if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
-            else:
-                messages.append({"role": "assistant", "content": message["content"]})
+            role = HumanMessage if message["role"] == "user" else AIMessage
+            msgs.append(role(content=message["content"]))
+        msgs.append(HumanMessage(content=user_message))
 
-        # Add the final instruction to create the complete character profiles
-        messages.append(
-            {
-                "role": "user",
-                "content": f"Based on our conversation, please create {num_characters} detailed character profiles for the book. Format each character with Name, Role, Physical Description, Background, Personality, and Goals/Motivations. This will be the final character list for the book.",
-            }
-        )
-
-        # Save the messages for debugging
         self._save_debug_messages(
-            messages, "character_generator", "final_characters_stream_request"
+            [{"role": m.type, "content": m.content} for m in msgs],
+            "outline_creator_chat", "chat_outline_request"
+        )
+        return self.llm.invoke(msgs).content
+
+    def generate_chat_response_outline_stream(self, chat_history, world_theme, characters, synopsis, user_message):
+        """Streaming outline chat."""
+        extra = (
+            f"The book takes place in the following world:\n\n{world_theme}\n\n"
+            f"The characters include:\n\n{characters}\n\n"
+            f"The Story Synopsis is:\n\n{synopsis}"
+        )
+        return self._chat_stream(
+            "outline_creator_chat", chat_history, user_message,
+            "chat_outline_stream_request",
+            extra_system_context=extra,
         )
 
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
+    def generate_final_outline_stream(self, chat_history, world_theme, characters, synopsis, num_chapters=10):
+        """Generate final outline (streaming)."""
+        msgs = [SystemMessage(content=self.system_prompts["outline_creator"])]
+        msgs.append(SystemMessage(content=(
+            f"The book takes place in the following world:\n\n{world_theme}\n\n"
+            f"The characters include:\n\n{characters}\n\n"
+            f"The Story Synopsis is:\n\n{synopsis}"
+        )))
 
-        if not self.debug:
-            return stream
-
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "character_generator", "final_characters_stream_response"
-        )
-
-    def generate_chat_response_outline(
-        self, chat_history, world_theme, characters, synopsis, user_message
-    ):
-        """Generate a chat response about outline creation."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["outline_creator_chat"]}
-        ]
-
-        # Add world theme and character context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"The book takes place in the following world:\n\n{world_theme}\n\nThe characters include:\n\n{characters}\n\nThe Story Synopsis is:\n\n{synopsis}",
-            }
-        )
-
-        # Add conversation context from chat history
         for message in chat_history:
             if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
+                msgs.append(HumanMessage(content=message["content"]))
             else:
-                messages.append({"role": "assistant", "content": message["content"]})
+                msgs.append(AIMessage(content=message["content"]))
 
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
-
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "outline_creator_chat", "chat_outline_request"
-        )
-
-        # Make the API call
-        response = (
-            self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.agent_config.get("temperature", 0.7),
-                max_tokens=self.agent_config.get("max_tokens", 10000),
-            )
-            .choices[0]
-            .message.content
-        )
-
-        return response
-
-    def generate_chat_response_outline_stream(
-        self, chat_history, world_theme, characters, synopsis, user_message
-    ):
-        """Generate a streaming chat response about outline creation."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["outline_creator_chat"]}
-        ]
-
-        # Add world theme and character context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"The book takes place in the following world:\n\n{world_theme}\n\nThe characters include:\n\n{characters}\n\nThe Story Synopsis is:\n\n{synopsis}",
-            }
-        )
-
-        # Add conversation context from chat history
-        for message in chat_history:
-            if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
-            else:
-                messages.append({"role": "assistant", "content": message["content"]})
-
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
-
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "outline_creator_chat", "chat_outline_stream_request"
-        )
-
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
-        if not self.debug:
-            return stream
-
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "outline_creator_chat", "chat_outline_stream_response"
-        )
-
-    def generate_final_outline_stream(
-        self, chat_history, world_theme, characters, synopsis, num_chapters=10
-    ):
-        """Generate the final outline based on chat history using streaming."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["outline_creator"]}
-        ]
-
-        # Add world theme and character context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"The book takes place in the following world:\n\n{world_theme}\n\nThe characters include:\n\n{characters}\n\nThe Story Synopsis is:\n\n{synopsis}",
-            }
-        )
-
-        # Add conversation context from chat history
-        for message in chat_history:
-            if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
-            else:
-                messages.append({"role": "assistant", "content": message["content"]})
-
-        # Add the final instruction to create the complete outline with specific formatting guidance
-        messages.append(
-            {
-                "role": "user",
-                "content": f"""Based on our conversation, please create a detailed {num_chapters}-chapter outline for the book.
+        msgs.append(HumanMessage(content=f"""Based on our conversation, please create a detailed {num_chapters}-chapter outline for the book.
 
 CRITICAL REQUIREMENTS:
 1. Create EXACTLY {num_chapters} chapters, numbered sequentially from 1 to {num_chapters}
@@ -1110,130 +658,60 @@ CRITICAL REQUIREMENTS:
 5. Maintain a coherent story from beginning to end
 
 Format it as a properly structured outline with clear chapter sections and events. This will be the final outline for the book.
-""",
-            }
-        )
+"""))
 
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "outline_creator", "final_outline_stream_request"
-        )
+        raw_msgs = [{"role": m.type, "content": m.content} for m in msgs]
+        self._save_debug_messages(raw_msgs, "outline_creator", "final_outline_stream_request")
 
-        # Make the API call with streaming enabled, with higher temperature for more coherent responses
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.6,  # Slightly lower temperature for more focused output
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
+        stream = self.streaming_llm.stream(msgs)
         if not self.debug:
             return stream
+        return self._wrap_stream_for_debug(stream, "outline_creator", "final_outline_stream_response")
 
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "outline_creator", "final_outline_stream_response"
-        )
-
+    # ------------------------------------------------------------------
+    # Action beats chat
+    # ------------------------------------------------------------------
     def generate_chat_response_action_beats_stream(
         self, chat_history, chapter_summary, world_theme, characters, user_message
     ):
-        """Generate a streaming chat response about action beats creation."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["action_beats_chat"]}
-        ]
-
-        # Add context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"Chapter Summary:\n\n{chapter_summary}\n\nWorld:\n\n{world_theme}\n\nCharacters:\n\n{characters}",
-            }
+        """Streaming action beats chat."""
+        extra = (
+            f"Chapter Summary:\n\n{chapter_summary}\n\n"
+            f"World:\n\n{world_theme}\n\n"
+            f"Characters:\n\n{characters}"
         )
-
-        # Add conversation context from chat history
-        for message in chat_history:
-            if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
-            else:
-                messages.append({"role": "assistant", "content": message["content"]})
-
-        # Add the latest user message
-        messages.append({"role": "user", "content": user_message})
-
-        self._save_debug_messages(
-            messages, "action_beats_chat", "chat_action_beats_stream_request"
-        )
-
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
-        if not self.debug:
-            return stream
-
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "action_beats_chat", "chat_action_beats_stream_response"
+        return self._chat_stream(
+            "action_beats_chat", chat_history, user_message,
+            "chat_action_beats_stream_request",
+            extra_system_context=extra,
         )
 
     def generate_final_action_beats_stream(
         self, chat_history, chapter_summary, world_theme, characters, num_beats
     ):
-        """Generate the final action beats based on chat history using streaming."""
-        # Format messages for the API call
-        messages = [
-            {"role": "system", "content": self.system_prompts["action_beats_generator"]}
-        ]
+        """Generate final action beats (streaming)."""
+        msgs = [SystemMessage(content=self.system_prompts["action_beats_generator"])]
+        msgs.append(SystemMessage(content=(
+            f"Chapter Summary:\n\n{chapter_summary}\n\n"
+            f"World:\n\n{world_theme}\n\n"
+            f"Characters:\n\n{characters}"
+        )))
 
-        # Add context
-        messages.append(
-            {
-                "role": "system",
-                "content": f"Chapter Summary:\n\n{chapter_summary}\n\nWorld:\n\n{world_theme}\n\nCharacters:\n\n{characters}",
-            }
-        )
-
-        # Add conversation context from chat history
         for message in chat_history:
             if message["role"] == "user":
-                messages.append({"role": "user", "content": message["content"]})
+                msgs.append(HumanMessage(content=message["content"]))
             else:
-                messages.append({"role": "assistant", "content": message["content"]})
+                msgs.append(AIMessage(content=message["content"]))
 
-        # Add the final instruction to create the complete action beat profiles
-        messages.append(
-            {
-                "role": "user",
-                "content": f"Based on our conversation, please generate {num_beats} highly detailed action beats for the chapter. Ensure proper nouns are used instead of pronouns.",
-            }
-        )
+        msgs.append(HumanMessage(content=(
+            f"Based on our conversation, please generate {num_beats} highly detailed action beats "
+            "for the chapter. Ensure proper nouns are used instead of pronouns."
+        )))
 
-        # Save the messages for debugging
-        self._save_debug_messages(
-            messages, "action_beats_generator", "final_action_beats_stream_request"
-        )
+        raw_msgs = [{"role": m.type, "content": m.content} for m in msgs]
+        self._save_debug_messages(raw_msgs, "action_beats_generator", "final_action_beats_stream_request")
 
-        # Make the API call with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.agent_config.get("temperature", 0.7),
-            stream=True,
-            max_tokens=self.agent_config.get("max_tokens", 10000),
-        )
-
+        stream = self.streaming_llm.stream(msgs)
         if not self.debug:
             return stream
-
-        # If debugging is enabled, wrap the stream to save the full response at the end
-        return self._create_debug_stream_wrapper(
-            stream, "action_beats_generator", "final_action_beats_stream_response"
-        )
+        return self._wrap_stream_for_debug(stream, "action_beats_generator", "final_action_beats_stream_response")
