@@ -169,6 +169,7 @@
                                     <button type="button" class="btn btn-warning me-2" id="executeChapterReviewBtn">Execute Chapter Review</button>
                                     <button type="button" class="btn btn-info" id="showPromptBtn">Show Execute Chapter Review Prompt</button>
                                 </div>
+
                             </div>
                         </div>
                     </div>
@@ -365,6 +366,14 @@ $(document).ready(function() {
 
                                 if (data.content === '[DONE]') {
                                     // This will be handled by the done flag
+                                    return;
+                                }
+
+                                // Multi-agent pipeline stage progress
+                                if (data.stage) {
+                                    const stageLabel = data.label || data.stage;
+                                    $('#generatingIndicator div').last()
+                                        .html('Editing chapter content... (Step ' + data.index + ' of ' + data.total + ': ' + stageLabel + ')');
                                     return;
                                 }
 

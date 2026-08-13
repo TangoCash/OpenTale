@@ -15,6 +15,8 @@ DEFAULT_CONFIG = {
     "timeout": 1000,
     "max_tokens": 10000,
     "debug": False,
+    "searxng_host": "",
+    "research_agent_enabled": False,
 }
 
 

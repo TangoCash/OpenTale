@@ -1,6 +1,10 @@
 """Define the API client for book generation system — powered by LangChain."""
 
 import os
+import urllib.request
+import urllib.parse
+import urllib.error
+import json as json_module
 from typing import Dict, List, Optional
 
 from langchain_openai import ChatOpenAI
@@ -10,6 +14,31 @@ import prompts
 
 # Constants
 PROMPT_DEBUGGING_DIR = "prompt_debugging"
+
+# Ordered pipeline of specialized chapter-revision agents.
+# Each agent receives the complete chapter from the previous stage and
+# returns a complete revised chapter. Order matters: length runs last.
+REVISION_AGENTS = [
+    "prose_flow_editor",
+    "character_consistency_editor",
+    "plot_beats_editor",
+    "descriptive_editor",
+    "dialogue_editor",
+    "world_continuity_editor",
+    "grammar_editor",
+    "length_editor",
+]
+
+REVISION_AGENT_LABELS = {
+    "prose_flow_editor": "Improving prose quality and flow",
+    "character_consistency_editor": "Ensuring character consistency",
+    "plot_beats_editor": "Aligning with outline and action beats",
+    "descriptive_editor": "Enhancing descriptive elements",
+    "dialogue_editor": "Strengthening dialogue and interactions",
+    "world_continuity_editor": "Maintaining world and plot continuity",
+    "grammar_editor": "Fixing grammatical and structural issues",
+    "length_editor": "Ensuring minimum word count",
+}
 
 
 def check_openai_connection(agent_config: Dict):
@@ -138,7 +167,7 @@ adhering to the following directives and craft rules at all times.
 
 ---
 Always reference the outline and previous content.
-Mark drafts with 'SCENE:' and final versions with 'SCENE FINAL:'
+Do not add any trailing markers or meta-text such as "SCENE:", "SCENE FINAL:", or "END OF CHAPTER". Write only the prose itself.
 """
 
     def _editor_system(self) -> str:
@@ -162,9 +191,8 @@ adhering to the following directives at all times.
 7. Each chapter MUST be at least 5000 words.
 
 Format your responses:
-1. Start critiques with 'FEEDBACK:'
-2. Provide suggestions with 'SUGGEST:'
-3. Return full edited chapter with 'EDITED_SCENE:'
+1. Return the full edited chapter as plain prose.
+2. Do not include any labels, markers, or meta-text such as "FEEDBACK:", "SUGGEST:", "EDITED_SCENE:", "SCENE:", or "END OF CHAPTER".
 
 ---
 Always reference specific outline elements in your feedback.
@@ -290,6 +318,18 @@ The book has {num_chapters} chapters total, but during this chat focus on story 
             "inline_writer": prompts.SYSTEM_PROMPTS["inline_writer"],
             "inline_reviser": prompts.SYSTEM_PROMPTS["inline_reviser"],
             "inline_continuer": prompts.SYSTEM_PROMPTS["inline_continuer"],
+            "continuity_checker": prompts.SYSTEM_PROMPTS["continuity_checker"],
+            "continuity_fixer": prompts.SYSTEM_PROMPTS["continuity_fixer"],
+            "research_agent": prompts.SYSTEM_PROMPTS["research_agent"],
+            # Specialized chapter-revision agents (multi-agent pipeline)
+            "prose_flow_editor": prompts.SYSTEM_PROMPTS["prose_flow_editor"],
+            "character_consistency_editor": prompts.SYSTEM_PROMPTS["character_consistency_editor"],
+            "plot_beats_editor": prompts.SYSTEM_PROMPTS["plot_beats_editor"],
+            "descriptive_editor": prompts.SYSTEM_PROMPTS["descriptive_editor"],
+            "dialogue_editor": prompts.SYSTEM_PROMPTS["dialogue_editor"],
+            "world_continuity_editor": prompts.SYSTEM_PROMPTS["world_continuity_editor"],
+            "grammar_editor": prompts.SYSTEM_PROMPTS["grammar_editor"],
+            "length_editor": prompts.SYSTEM_PROMPTS["length_editor"],
             # Dynamic prompts (use outline context)
             "writer": self._writer_system(),
             "editor": self._editor_system(),
@@ -360,6 +400,123 @@ The book has {num_chapters} chapters total, but during this chat focus on story 
         if not self.debug:
             return stream
         return self._wrap_stream_for_debug(stream, agent_name, "stream_response")
+
+    # ==================================================================
+    # Multi-agent chapter revision pipeline
+    # ==================================================================
+    def _build_revision_prompt(
+        self,
+        chapter_number: int,
+        chapter_title: str,
+        chapter_content: str,
+        chapter_outline: str,
+        world_theme: str,
+        characters: str,
+        action_beats: str,
+        previous_context: str,
+        research_brief: str,
+        master_prompt: str,
+        point_of_view: str,
+        tense: str,
+        min_words: str,
+    ) -> str:
+        """Build the shared user prompt for a single revision stage."""
+        return prompts.CHAPTER_REVISION_PROMPT.invoke({
+            "chapter_number": chapter_number,
+            "chapter_title": chapter_title,
+            "chapter_content": chapter_content,
+            "chapter_outline": chapter_outline,
+            "world_theme": world_theme,
+            "relevant_characters": characters,
+            "action_beats": action_beats,
+            "previous_context": previous_context,
+            "research_brief": research_brief,
+            "master_prompt": master_prompt,
+            "point_of_view": point_of_view,
+            "tense": tense,
+            "min_words": min_words,
+        }).messages[0].content
+
+    def revise_chapter(self, context: Dict, progress_callback=None) -> str:
+        """Run the full multi-agent revision pipeline and return the final chapter.
+
+        `context` must contain:
+            chapter_number, chapter_title, chapter_content, chapter_outline,
+            world_theme, characters, action_beats, previous_context,
+            research_brief, master_prompt, point_of_view, tense, min_words
+
+        `progress_callback` (optional) is called as (agent_name, label, index, total).
+        """
+        current = context["chapter_content"]
+        total = len(REVISION_AGENTS)
+        for index, agent_name in enumerate(REVISION_AGENTS, 1):
+            label = REVISION_AGENT_LABELS.get(agent_name, agent_name)
+            if progress_callback:
+                progress_callback(agent_name, label, index, total)
+            prompt = self._build_revision_prompt(
+                chapter_number=context["chapter_number"],
+                chapter_title=context["chapter_title"],
+                chapter_content=current,
+                chapter_outline=context["chapter_outline"],
+                world_theme=context["world_theme"],
+                characters=context["characters"],
+                action_beats=context["action_beats"],
+                previous_context=context["previous_context"],
+                research_brief=context["research_brief"],
+                master_prompt=context["master_prompt"],
+                point_of_view=context["point_of_view"],
+                tense=context["tense"],
+                min_words=context["min_words"],
+            )
+            current = self.generate_content(agent_name, prompt)
+        return current
+
+    def revise_chapter_stream(self, context: Dict):
+        """Run the revision pipeline in streaming mode.
+
+        Yields plain dict payloads:
+            {"stage": ..., "label": ..., "index": ..., "total": ...}
+            {"content": "..."}
+
+        The caller serializes these to the wire format and can collect the
+        "content" payloads of the final stage to persist the finished chapter.
+        Intermediate stages run silently (non-streaming) and are only
+        surfaced via their stage status payloads.
+        """
+        current = context["chapter_content"]
+        total = len(REVISION_AGENTS)
+        for index, agent_name in enumerate(REVISION_AGENTS, 1):
+            label = REVISION_AGENT_LABELS.get(agent_name, agent_name)
+            yield {"stage": agent_name, "label": label, "index": index, "total": total}
+
+            prompt = self._build_revision_prompt(
+                chapter_number=context["chapter_number"],
+                chapter_title=context["chapter_title"],
+                chapter_content=current,
+                chapter_outline=context["chapter_outline"],
+                world_theme=context["world_theme"],
+                characters=context["characters"],
+                action_beats=context["action_beats"],
+                previous_context=context["previous_context"],
+                research_brief=context["research_brief"],
+                master_prompt=context["master_prompt"],
+                point_of_view=context["point_of_view"],
+                tense=context["tense"],
+                min_words=context["min_words"],
+            )
+
+            is_final = agent_name == REVISION_AGENTS[-1]
+            if is_final:
+                # Stream the final stage token-by-token so the UI can render it.
+                final_text = []
+                for chunk in self.generate_content_stream(agent_name, prompt):
+                    piece = chunk.content
+                    if piece:
+                        final_text.append(piece)
+                        yield {"content": piece}
+                current = "".join(final_text)
+            else:
+                current = self.generate_content(agent_name, prompt)
 
     # ==================================================================
     # Chat-style generation (streaming) — generic helper
@@ -685,6 +842,215 @@ Format it as a properly structured outline with clear chapter sections and event
             "chat_action_beats_stream_request",
             extra_system_context=extra,
         )
+
+    # ------------------------------------------------------------------
+    # Continuity checker
+    # ------------------------------------------------------------------
+    def run_continuity_check_stream(self, characters: str, world_theme: str, synopsis: str, chapters_content: str):
+        """Run a streaming continuity check across the manuscript."""
+        prompt = f"""Please analyze the following manuscript for continuity issues.
+
+=== CHARACTERS ===
+{characters if characters else "No character profiles available."}
+
+=== WORLD SETTING ===
+{world_theme if world_theme else "No world setting available."}
+
+=== SYNOPSIS ===
+{synopsis if synopsis else "No synopsis available."}
+
+=== CHAPTERS ===
+{chapters_content if chapters_content else "No chapters available."}
+
+=== END OF MANUSCRIPT ===
+
+Please produce a complete continuity report following your output format guidelines."""
+        return self.generate_content_stream("continuity_checker", prompt)
+
+    def fix_continuity_issues_stream(self, continuity_report: str, characters: str, world_theme: str, synopsis: str, chapters_content: str):
+        """Run a streaming continuity fix — takes the report and manuscript, returns corrected text for chapters only."""
+        prompt = f"""Please fix all continuity issues listed in the report below by producing corrected text for each problematic passage.
+
+=== IMMUTABLE REFERENCE DOCUMENTS (DO NOT FIX THESE — use them only as context) ===
+
+CHARACTERS (reference only):
+{characters if characters else "No character profiles available."}
+
+WORLD SETTING (reference only):
+{world_theme if world_theme else "No world setting available."}
+
+SYNOPSIS (reference only):
+{synopsis if synopsis else "No synopsis available."}
+
+=== EDITABLE CONTENT (ONLY fix inconsistencies HERE) ===
+
+CHAPTERS:
+{chapters_content if chapters_content else "No chapters available."}
+
+=== END OF MANUSCRIPT ===
+
+CRITICAL: You may ONLY produce corrected text for the CHAPTERS section above. The Characters, World Setting, and Synopsis are immutable reference documents. If an inconsistency exists between a chapter and one of these reference documents, fix the CHAPTER to match the reference document — never the other way around.
+
+Please produce corrected text for every issue in the report, following your output format guidelines. Every fix must reference a specific chapter number from the CHAPTERS section above."""
+        return self.generate_content_stream("continuity_fixer", prompt)
+
+    # ------------------------------------------------------------------
+    # SearXNG research agent
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _searxng_search(searxng_host: str, query: str, timeout: int = 15) -> list:
+        """Query the SearXNG JSON API and return results as a list of dicts.
+
+        Each result dict contains: title, url, content, engine, score, category.
+        Returns an empty list on any error.
+        """
+        host = searxng_host.rstrip("/")
+        params = urllib.parse.urlencode({
+            "q": query,
+            "format": "json",
+            "categories": "general",
+        })
+        url = f"{host}/search?{params}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenTale/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                body = response.read().decode("utf-8")
+            data = json_module.loads(body)
+            results = data.get("results", [])
+            simplified = []
+            for r in results:
+                simplified.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "content": r.get("content", ""),
+                    "engine": r.get("engine", ""),
+                    "score": r.get("score", 0.0),
+                    "category": r.get("category", ""),
+                })
+            return simplified
+        except (urllib.error.URLError, urllib.error.HTTPError,
+                json_module.JSONDecodeError, OSError, ValueError) as e:
+            if BookAgents._debug_instance:
+                print(f"[research_agent] SearXNG query failed: {e}")
+            return []
+
+    _debug_instance = False
+
+    def _build_research_queries(
+        self, chapter_title: str, chapter_outline: str,
+        world_theme: str, characters: str
+    ) -> list:
+        """Build a list of search queries from chapter context using the LLM."""
+        system_text = (
+            "You are a query generator. Given a book chapter's title, outline, "
+            "world setting, and characters, generate 3-5 specific SearXNG search "
+            "queries that will return factual, historical, or contextual information "
+            "useful for writing the chapter. Return ONLY the list of queries, one per "
+            "line, starting each line with a dash (-). No other text."
+        )
+        prompt = (
+            f"Chapter Title: {chapter_title}\n\n"
+            f"Chapter Outline/Events:\n{chapter_outline}\n\n"
+            f"World Setting:\n{world_theme}\n\n"
+            f"Characters:\n{characters}\n\n"
+            "Generate 3-5 specific search queries to research background facts "
+            "for this chapter:"
+        )
+        msgs = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=prompt),
+        ]
+        response = self.llm.invoke(msgs)
+        lines = response.content.strip().split("\n")
+        queries = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                queries.append(stripped[2:].strip())
+            elif stripped.startswith("-"):
+                queries.append(stripped[1:].strip())
+            elif stripped and len(queries) == 0:
+                queries.append(stripped)
+        # Deduplicate
+        seen = set()
+        unique = []
+        for q in queries:
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                unique.append(q)
+        return unique[:5]
+
+    def fetch_research_results(
+        self, searxng_host: str, chapter_title: str, chapter_outline: str,
+        world_theme: str, characters: str
+    ) -> list:
+        """Build queries and fetch results from SearXNG, returning aggregated results."""
+        BookAgents._debug_instance = self.debug
+        queries = self._build_research_queries(
+            chapter_title, chapter_outline, world_theme, characters
+        )
+        all_results = []
+        seen_urls = set()
+        for query in queries:
+            results = self._searxng_search(searxng_host, query)
+            for r in results:
+                if r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    all_results.append(r)
+            if len(all_results) >= 20:
+                break
+        return all_results
+
+    def generate_research_brief(
+        self, chapter_title: str, chapter_outline: str,
+        world_theme: str, characters: str, search_results: list
+    ) -> str:
+        """Generate a research brief using the LLM and search results as context."""
+        # Format search results
+        if search_results:
+            results_text_parts = []
+            for i, r in enumerate(search_results, 1):
+                results_text_parts.append(
+                    f"[{i}] {r['title']}\n"
+                    f"URL: {r['url']}\n"
+                    f"Source: {r['engine']}\n"
+                    f"Content: {r['content']}\n"
+                )
+            results_text = "\n---\n".join(results_text_parts)
+        else:
+            results_text = "(No search results available — the SearXNG host may be "
+            "unreachable or no results were found. Do your best with your own knowledge.)"
+
+        system_text = prompts.SYSTEM_PROMPTS["research_agent"]
+        prompt = (
+            f"Chapter Title: {chapter_title}\n\n"
+            f"Chapter Outline/Events:\n{chapter_outline}\n\n"
+            f"World Setting:\n{world_theme}\n\n"
+            f"Characters:\n{characters}\n\n"
+            f"=== SEARCH RESULTS ===\n{results_text}\n=== END SEARCH RESULTS ===\n\n"
+            "Please produce a research brief for this chapter using the search results "
+            "above plus your own knowledge. Follow your output format guidelines."
+        )
+        msgs = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=prompt),
+        ]
+        self._save_debug_messages(
+            [{"role": "system", "content": system_text},
+             {"role": "user", "content": prompt}],
+            "research_agent", "request"
+        )
+        response = self.llm.invoke(msgs)
+        content = response.content
+
+        if self.debug:
+            response_path = os.path.join(
+                PROMPT_DEBUGGING_DIR, "research_agent_response.txt"
+            )
+            with open(response_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        return content
 
     def generate_final_action_beats_stream(
         self, chat_history, chapter_summary, world_theme, characters, num_beats

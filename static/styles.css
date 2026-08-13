@@ -306,3 +306,39 @@ textarea#charactersContent {
     outline: 2px solid rgba(255, 255, 255, 0.6);
     outline-offset: 2px;
 }
+
+/* ===========================
+   Continuity Report
+   =========================== */
+.continuity-report {
+    max-height: 400px;
+    overflow-y: auto;
+    background: #f8f9fa;
+    color: #212529;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+[data-bs-theme="dark"] .continuity-report {
+    background: #1a1d20;
+    color: #dee2e6;
+}
+
+/* ===========================
+   Fix Report (continuity fixer output)
+   =========================== */
+.fix-report {
+    max-height: 400px;
+    overflow-y: auto;
+    background: #e8f5e9;
+    color: #212529;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+[data-bs-theme="dark"] .fix-report {
+    background: #1a2e1a;
+    color: #c8e6c9;
+}

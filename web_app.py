@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from io import BytesIO
 
 from flask import (
     Flask,
@@ -15,11 +16,18 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     stream_with_context,
 )
 
 import prompts
-from agents import PROMPT_DEBUGGING_DIR, BookAgents, check_openai_connection
+from agents import (
+    PROMPT_DEBUGGING_DIR,
+    REVISION_AGENTS,
+    REVISION_AGENT_LABELS,
+    BookAgents,
+    check_openai_connection,
+)
 from config import get_config, save_config as save_config_file
 from config import DEFAULT_CONFIG
 
@@ -692,13 +700,262 @@ def outline():
     )
 
 
+def _build_book_text():
+    """Compile all chapters into a single book text (used for stats/diagnostics)."""
+    collected = _collect_chapters()
+    parts = [
+        f"Chapter {ch['number']}: {ch['title']}\n\n{ch['content']}"
+        for ch in collected
+    ]
+    included = [
+        {"number": ch["number"], "title": ch["title"], "reviewed": ch["reviewed"]}
+        for ch in collected
+    ]
+    return "\n\n\n".join(parts), included
+
+
+def _build_book_docx():
+    """Build a well-formatted .docx book from all chapters and return its bytes."""
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    collected = _collect_chapters()
+    doc = Document()
+
+    # Base body font (book-like serif)
+    normal = doc.styles["Normal"]
+    normal.font.name = "Georgia"
+    normal.font.size = Pt(11)
+
+    # Title page
+    title_text = get_current_project_name().replace("_", " ").replace("-", " ").title()
+    title = doc.add_heading(title_text, level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    subtitle = doc.add_paragraph(
+        f"A novel in {len(collected)} chapters"
+    )
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle.style = doc.styles["Subtitle"]
+
+    doc.add_page_break()
+
+    for index, chapter in enumerate(collected):
+        heading = doc.add_heading(
+            f"Chapter {chapter['number']}: {chapter['title']}", level=1
+        )
+        heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+        # Split content into logical paragraphs on blank lines.
+        blocks = re.split(r"\n\s*\n", chapter["content"])
+        for block in blocks:
+            block = re.sub(r"\s*\n\s*", " ", block).strip()
+            if block:
+                doc.add_paragraph(block)
+
+        # Page break between chapters (not after the last one).
+        if index < len(collected) - 1:
+            doc.add_page_break()
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
 @app.route("/chapters", methods=["GET"])
 def chapters_list():
     if not os.path.exists(SYNOPSIS_FILE):
         flash("You need to create a synopsis first.", "warning")
         return redirect("/synopsis")
     chapters = get_chapters()
-    return render_template("chapters.html", chapters=chapters)
+    _, included = _build_book_text()
+    included_numbers = {ch["number"] for ch in included}
+    book_stats = {
+        "total_chapters": len(chapters),
+        "completed_chapters": len(included_numbers),
+        "ready": len(included_numbers) > 0,
+    }
+    return render_template(
+        "chapters.html", chapters=chapters, book_stats=book_stats
+    )
+
+
+@app.route("/export_book", methods=["GET"])
+def export_book():
+    """Generate the complete book from all chapters and serve it as a .docx download."""
+    collected = _collect_chapters()
+    if not collected:
+        return jsonify({
+            "error": "No chapter content found. Generate or review chapters first."
+        }), 400
+
+    project_name = get_current_project_name()
+    filename = f"{project_name}.docx"
+
+    try:
+        docx_bytes = _build_book_docx()
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to generate the Word document: {str(e)}"
+        }), 500
+
+    data = BytesIO(docx_bytes)
+    return send_file(
+        data,
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.route("/continuity", methods=["GET"])
+def continuity():
+    """Display the continuity check page."""
+    if not os.path.exists(SYNOPSIS_FILE):
+        flash("You need to create a synopsis first.", "warning")
+        return redirect("/synopsis")
+    chapters = get_chapters()
+    return render_template("continuity.html", chapters=chapters)
+
+
+def _clean_chapter_text(content: str) -> str:
+    """Strip internal drafting markers (SCENE:, SCENE FINAL:, END OF CHAPTER,
+    EDITED_SCENE:, etc.) from chapter text so only the prose remains.
+
+    Handles markdown-wrapped markers (e.g. **SCENE:**), escaped underscores
+    (EDITED\\_SCENE:), word-count tails (SCENE FINAL: 5078 words), and scene
+    headings without destroying real prose.
+    """
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+
+    out = []
+    for raw in content.split("\n"):
+        line = raw.strip()
+
+        # Preserve blank lines: they separate paragraphs.
+        if not line:
+            out.append("")
+            continue
+
+        # Strip markdown emphasis characters and unescape underscores so we can
+        # classify the line's actual content.
+        core = line.strip(" *")
+        core = core.replace("\\_", "_").strip()
+        norm = re.sub(r"\s+", " ", core).strip()
+
+        # --- Drop whole lines that are pure markers ---------------------------------
+        if re.fullmatch(
+            r"(SCENE\s*FINAL?\s*:?|EDITED\s*_?\s*SCENE\s*:?|END\s+OF\s+CHAPTER\s*\d*)",
+            norm,
+            re.IGNORECASE,
+        ):
+            continue
+
+        # "SCENE FINAL: END OF CHAPTER N" / "END OF CHAPTER N"
+        if re.fullmatch(
+            r"SCENE\s*FINAL\s*:\s*END\s+OF\s+CHAPTER\s*\d*",
+            norm,
+            re.IGNORECASE,
+        ):
+            continue
+
+        # "SCENE FINAL: 5078 words"
+        if re.fullmatch(
+            r"SCENE\s*FINAL\s*:\s*\d+\s+WORDS?",
+            norm,
+            re.IGNORECASE,
+        ):
+            continue
+
+        # "SCENE FINAL: CHAPTER 2 - / – THE FIRST EXPERIMENT" (heading only)
+        if re.fullmatch(
+            r"SCENE\s*FINAL?\s*:\s*CHAPTER\s+\d+\s*[-\u2013].*",
+            norm,
+            re.IGNORECASE,
+        ):
+            continue
+
+        # "SCENE: <text>" — strip the prefix; drop if it looks like a short
+        # title/heading rather than prose.
+        scene_match = re.fullmatch(r"SCENE\s*:\s*(.*)", norm, re.IGNORECASE)
+        if scene_match:
+            rest = scene_match.group(1).strip()
+            if not rest:
+                continue
+            words = rest.split()
+            # Short, non-sentence text (e.g. "The Glow of Discovery",
+            # "Chapter 9", "THE SENSORY HYPOTHESIS") is a heading -> drop.
+            if len(words) <= 6 and not re.search(r"[.!?]$", rest):
+                continue
+            line = rest
+            out.append(line)
+            continue
+
+        # --- Remove inline "SCENE FINAL: ..." tails -------------------------------
+        line = re.sub(
+            r"\s*SCENE\s*FINAL\s*:\s*(END\s+OF\s+CHAPTER\s*\d*|\d+\s+WORDS?)",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        )
+
+        # Strip a leading "SCENE:" prefix when genuine prose follows.
+        prefix_match = re.match(r"^SCENE\s*:\s+(.+)$", line, re.IGNORECASE)
+        if prefix_match:
+            line = prefix_match.group(1)
+
+        if line.strip():
+            out.append(line.strip())
+
+    text = "\n".join(out)
+    # Collapse runs of blank lines into a single blank line and trim the edges.
+    text = re.sub(r"\n{3,}", "\n\n", text).strip("\n")
+    return text.strip()
+
+
+def _collect_chapters():
+    """Collect all chapters with content, in order.
+
+    For each chapter, prefer the reviewed ("_editor") version when available;
+    otherwise fall back to the draft chapter. Returns a list of dicts with
+    keys: number, title, content, reviewed.
+    """
+    chapters = get_chapters()
+    chapters = sorted(chapters, key=lambda c: c.get("chapter_number", 0))
+
+    collected = []
+    for chapter in chapters:
+        number = chapter.get("chapter_number")
+        title = chapter.get("title", "")
+
+        editor_path = os.path.join(CHAPTERS_DIR, f"chapter_{number}_editor{TEXT_EXTENSION}")
+        draft_path = os.path.join(CHAPTERS_DIR, f"chapter_{number}{TEXT_EXTENSION}")
+
+        content = ""
+        used_editor = False
+        if os.path.exists(editor_path) and os.path.getsize(editor_path) > 0:
+            with open(editor_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            used_editor = True
+        elif os.path.exists(draft_path) and os.path.getsize(draft_path) > 0:
+            with open(draft_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+
+        if not content:
+            continue
+
+        collected.append({
+            "number": number,
+            "title": title,
+            "content": _clean_chapter_text(content),
+            "reviewed": used_editor,
+        })
+
+    return collected
 
 
 @app.route("/generate_chapters", methods=["POST"])
@@ -791,6 +1048,7 @@ def chapter(chapter_number):
             scene_details="",
             action_beats=action_beats,
             previous_context=previous_context,
+            research_brief="",
             point_of_view=point_of_view,
             tense=tense,
             min_words=min_words,
@@ -886,14 +1144,117 @@ def _handle_chapter_stream(chapter_number, agent_name):
         else chapter_data["prompt"]
     )
 
-    prompt_template = (
-        prompts.CHAPTER_EDITING_PROMPT
-        if agent_name == "editor"
-        else prompts.CHAPTER_GENERATION_PROMPT
-    )
+    # Auto-fetch research brief if the research agent is enabled
+    research_brief = ""
+    if not show_prompt:
+        from config import _load_config_file
+        raw_cfg = _load_config_file()
+        if raw_cfg.get("research_agent_enabled", False):
+            searxng_host = raw_cfg.get("searxng_host", "").strip()
+            if searxng_host:
+                try:
+                    search_results = book_agents.fetch_research_results(
+                        searxng_host,
+                        chapter_data["title"],
+                        chapter_prompt,
+                        world_theme,
+                        characters,
+                    )
+                    brief = book_agents.generate_research_brief(
+                        chapter_data["title"],
+                        chapter_prompt,
+                        world_theme,
+                        characters,
+                        search_results,
+                    )
+                    research_brief = brief
+                    # Save per-chapter brief
+                    brief_path = os.path.join(
+                        CHAPTERS_DIR,
+                        f"chapter_{chapter_number}_research_brief{TEXT_EXTENSION}",
+                    )
+                    with open(brief_path, "w", encoding="utf-8") as f:
+                        f.write(brief)
+                except Exception:
+                    # Research should never block chapter generation
+                    research_brief = ""
 
+    # ------------------------------------------------------------------
+    # Editor -> multi-agent revision pipeline (the 8 specialized agents)
+    # ------------------------------------------------------------------
+    if agent_name == "editor":
+        revision_context = {
+            "chapter_number": chapter_number,
+            "chapter_title": chapter_data["title"],
+            "chapter_content": chapter_content,
+            "chapter_outline": chapter_prompt,
+            "world_theme": world_theme,
+            "characters": characters,
+            "action_beats": action_beats,
+            "previous_context": previous_context,
+            "research_brief": research_brief,
+            "master_prompt": master_prompt,
+            "point_of_view": point_of_view,
+            "tense": tense,
+            "min_words": min_words,
+        }
+
+        if show_prompt:
+            pipeline_desc = "Chapter Review Pipeline (multi-agent):\n\n" + "\n".join(
+                f"{i}. {REVISION_AGENT_LABELS.get(name, name)}"
+                for i, name in enumerate(REVISION_AGENTS, 1)
+            )
+            first_agent = REVISION_AGENTS[0]
+            system_prompt = (
+                pipeline_desc
+                + "\n\n--- First agent system prompt ---\n\n"
+                + book_agents.system_prompts.get(first_agent, "")
+            )
+            user_prompt = book_agents._build_revision_prompt(
+                chapter_number=chapter_number,
+                chapter_title=chapter_data["title"],
+                chapter_content=chapter_content,
+                chapter_outline=chapter_prompt,
+                world_theme=world_theme,
+                characters=characters,
+                action_beats=action_beats,
+                previous_context=previous_context,
+                research_brief=research_brief,
+                master_prompt=master_prompt,
+                point_of_view=point_of_view,
+                tense=tense,
+                min_words=min_words,
+            )
+            return jsonify({"system_prompt": system_prompt, "user_prompt": user_prompt})
+
+        def generate():
+            yield 'data: {"content": ""}\n\n'
+            collected_content = []
+            for payload in book_agents.revise_chapter_stream(revision_context):
+                if "content" in payload:
+                    collected_content.append(payload["content"])
+                yield f"data: {json.dumps(payload)}\n\n"
+
+            complete_content = "".join(collected_content)
+            chapter_path = os.path.join(
+                CHAPTERS_DIR, f"chapter_{chapter_number}_editor{TEXT_EXTENSION}"
+            )
+            with open(chapter_path, "w", encoding="utf-8") as f:
+                f.write(complete_content)
+
+            yield f"data: {json.dumps({'content': '[DONE]'})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ------------------------------------------------------------------
+    # Writer -> single-agent chapter generation (unchanged)
+    # ------------------------------------------------------------------
     user_prompt_str = _fmt_user(
-        prompt_template,
+        prompts.CHAPTER_GENERATION_PROMPT,
         master_prompt=master_prompt,
         chapter_number=chapter_number,
         chapter_title=chapter_data["title"],
@@ -903,9 +1264,9 @@ def _handle_chapter_stream(chapter_number, agent_name):
         scene_details="",
         action_beats=action_beats,
         previous_context=previous_context,
+        research_brief=research_brief,
         point_of_view=point_of_view,
         tense=tense,
-        chapter_content=chapter_content,
         min_words=min_words,
         min_tokens=min_tokens,
     )
@@ -926,9 +1287,8 @@ def _handle_chapter_stream(chapter_number, agent_name):
                 yield f"data: {json.dumps({'content': content})}\n\n"
 
         complete_content = "".join(collected_content)
-        file_suffix = "_editor" if agent_name == "editor" else ""
         chapter_path = os.path.join(
-            CHAPTERS_DIR, f"chapter_{chapter_number}{file_suffix}{TEXT_EXTENSION}"
+            CHAPTERS_DIR, f"chapter_{chapter_number}{TEXT_EXTENSION}"
         )
         with open(chapter_path, "w", encoding="utf-8") as f:
             f.write(complete_content)
@@ -1733,6 +2093,295 @@ def api_chapter(chapter_number):
             mimetype="application/json",
         )
     return jsonify(chapter_data)
+
+
+@app.route("/continuity_check_stream", methods=["POST"])
+def continuity_check_stream():
+    """Run a comprehensive continuity check across all manuscript content (streaming)."""
+    characters = get_characters()
+    world_theme = get_world_theme()
+    synopsis = get_synopsis()
+
+    # Collect all written chapter content
+    chapters = get_chapters()
+    chapters_parts = []
+    for ch in chapters:
+        chapter_path = os.path.join(CHAPTERS_DIR, f"chapter_{ch['chapter_number']}{TEXT_EXTENSION}")
+        if os.path.exists(chapter_path):
+            with open(chapter_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    chapters_parts.append(f"--- Chapter {ch['chapter_number']}: {ch['title']} ---\n{content}")
+
+    chapters_content = "\n\n".join(chapters_parts) if chapters_parts else ""
+
+    book_agents = BookAgents(agent_config)
+    book_agents.create_agents("", 0)
+
+    stream = book_agents.run_continuity_check_stream(
+        characters, world_theme, synopsis, chapters_content
+    )
+
+    def generate():
+        yield 'data: {"content": ""}\n\n'
+        for chunk in stream:
+            content = chunk.content
+            if content:
+                yield f"data: {json.dumps({'content': content})}\n\n"
+        yield f"data: {json.dumps({'content': '[DONE]'})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/continuity_fix_stream", methods=["POST"])
+def continuity_fix_stream():
+    """Run the continuity fixer AI to resolve issues found in the last continuity report."""
+    data = request.json
+    continuity_report = data.get("continuity_report", "")
+
+    characters = get_characters()
+    world_theme = get_world_theme()
+    synopsis = get_synopsis()
+
+    chapters = get_chapters()
+    chapters_parts = []
+    for ch in chapters:
+        chapter_path = os.path.join(CHAPTERS_DIR, f"chapter_{ch['chapter_number']}{TEXT_EXTENSION}")
+        if os.path.exists(chapter_path):
+            with open(chapter_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    chapters_parts.append(f"--- Chapter {ch['chapter_number']}: {ch['title']} ---\n{content}")
+
+    chapters_content = "\n\n".join(chapters_parts) if chapters_parts else ""
+
+    book_agents = BookAgents(agent_config)
+    book_agents.create_agents("", 0)
+
+    stream = book_agents.fix_continuity_issues_stream(
+        continuity_report, characters, world_theme, synopsis, chapters_content
+    )
+
+    def generate():
+        yield 'data: {"content": ""}\n\n'
+        for chunk in stream:
+            content = chunk.content
+            if content:
+                yield f"data: {json.dumps({'content': content})}\n\n"
+        yield f"data: {json.dumps({'content': '[DONE]'})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/continuity_apply_fixes", methods=["POST"])
+def continuity_apply_fixes():
+    """Parse the fix report and apply the corrected text back into the chapter files."""
+    data = request.json
+    fix_report = data.get("fix_report", "")
+
+    if not fix_report:
+        return jsonify({"success": False, "error": "No fix report provided."}), 400
+
+    # Load chapters index
+    chapters = get_chapters()
+    chapter_map = {}
+    for ch in chapters:
+        cn = ch["chapter_number"]
+        chapter_map[cn] = ch
+        chapter_path = os.path.join(CHAPTERS_DIR, f"chapter_{cn}{TEXT_EXTENSION}")
+        if os.path.exists(chapter_path):
+            with open(chapter_path, "r", encoding="utf-8") as f:
+                ch["_content"] = f.read()
+
+    # Parse the fix report for FIX blocks — line-by-line state-machine approach
+    import re
+    import textwrap
+
+    applied_count = 0
+    errors = []
+    fixes_log = []
+
+    # Split on any line containing "FIX #" with flexible formatting
+    blocks = re.split(r'\n(?=---?\s*FIX\s*#?\d+\s*-?-?)', fix_report)
+    # Also try splitting by "--- FIX" patterns
+    if len(blocks) <= 1:
+        blocks = re.split(r'---?\s*FIX\s*#?\d+', fix_report)
+
+    if len(blocks) <= 1:
+        return jsonify({"success": False, "error": "No FIX blocks found in the report. The AI may not have produced properly formatted output."}), 400
+
+    for i, block in enumerate(blocks[1:], 1):
+        lines = block.strip().split('\n')
+
+        # Extract chapter number — look for "Chapter: N" or "Chapter N:" patterns
+        chapter_num = None
+        old_text_start = None
+        new_text_start = None
+
+        for j, line in enumerate(lines):
+            stripped = line.strip()
+            # Check for chapter number
+            if chapter_num is None:
+                ch_match = re.search(r'Chapter\s*:?\s*(\d+)', stripped, re.IGNORECASE)
+                if ch_match:
+                    chapter_num = int(ch_match.group(1))
+            # Find Old Text / Corrected Text boundaries
+            if re.match(r'Old\s+Text\s*:?', stripped, re.IGNORECASE):
+                old_text_start = j + 1
+            if re.match(r'Corrected\s+Text\s*:?', stripped, re.IGNORECASE):
+                new_text_start = j + 1
+
+        if chapter_num is None:
+            errors.append(f"Fix #{i}: Could not determine chapter from block: {block[:100]}...")
+            continue
+        if old_text_start is None:
+            errors.append(f"Fix #{i}: Could not find Old Text marker")
+            continue
+        if new_text_start is None or new_text_start <= old_text_start:
+            errors.append(f"Fix #{i}: Could not find Corrected Text marker after Old Text")
+            continue
+
+        # Extract old text (from Old Text marker to Corrected Text marker)
+        old_text = '\n'.join(lines[old_text_start:new_text_start - 1]).strip()
+        # Extract new text (from Corrected Text marker to end or next marker)
+        # Stop at "--- FIX" or "FIXING COMPLETE" or end
+        new_text_lines = []
+        for line in lines[new_text_start:]:
+            if re.match(r'---?\s*FIX|FIXING\s+COMPLETE|UNABLE\s+TO\s+FIX', line, re.IGNORECASE):
+                break
+            new_text_lines.append(line)
+        new_text = '\n'.join(new_text_lines).strip()
+
+        if not old_text:
+            errors.append(f"Fix #{i}: Old Text is empty")
+            continue
+        if not new_text:
+            errors.append(f"Fix #{i}: Corrected Text is empty")
+            continue
+
+        if chapter_num not in chapter_map:
+            errors.append(f"Chapter {chapter_num} not found in the manuscript")
+            continue
+
+        ch = chapter_map[chapter_num]
+        content = ch.get("_content", "")
+        if not content:
+            errors.append(f"Chapter {chapter_num} has no content")
+            continue
+
+        # Try exact match, then normalized whitespace match
+        applied = False
+        for text_variant, new_variant in [
+            (old_text, new_text),
+            (textwrap.dedent(old_text).strip(), textwrap.dedent(new_text).strip()),
+            (' '.join(old_text.split()), ' '.join(new_text.split())),
+        ]:
+            if text_variant and text_variant in content:
+                content = content.replace(text_variant, new_variant, 1)
+                applied_count += 1
+                fixes_log.append(f"Chapter {chapter_num}: replaced old text with corrected text")
+                applied = True
+                break
+
+        if not applied:
+            errors.append(f"Chapter {chapter_num}: Old Text not found in chapter content (may have already been changed or quoted differently)")
+
+        # Save the chapter
+        chapter_path = os.path.join(CHAPTERS_DIR, f"chapter_{chapter_num}{TEXT_EXTENSION}")
+        with open(chapter_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    return jsonify({
+        "success": True,
+        "applied_count": applied_count,
+        "errors": errors,
+        "fixes_log": fixes_log,
+    })
+
+
+@app.route("/research_brief/<int:chapter_number>", methods=["POST"])
+def research_brief(chapter_number):
+    """Generate a research brief for a chapter using SearXNG web search."""
+    from config import _load_config_file
+
+    raw_cfg = _load_config_file()
+    research_enabled = raw_cfg.get("research_agent_enabled", False)
+    searxng_host = raw_cfg.get("searxng_host", "").strip()
+
+    if not research_enabled:
+        return jsonify({
+            "error": "Research agent is disabled. Enable it in Configuration."
+        }), 400
+
+    if not searxng_host:
+        return jsonify({
+            "error": "SearXNG host not configured. Set it in Configuration."
+        }), 400
+
+    chapters = get_chapters()
+    chapter_data = next(
+        (ch for ch in chapters if ch["chapter_number"] == chapter_number), None
+    )
+
+    if not chapter_data:
+        return jsonify({"error": f"Chapter {chapter_number} not found"}), 404
+
+    world_theme = get_world_theme()
+    characters = get_characters()
+
+    book_agents = BookAgents(agent_config, chapters)
+    book_agents.create_agents(world_theme, len(chapters) if chapters else 1)
+
+    try:
+        search_results = book_agents.fetch_research_results(
+            searxng_host,
+            chapter_data["title"],
+            chapter_data.get("prompt", ""),
+            world_theme,
+            characters,
+        )
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to fetch search results from SearXNG: {str(e)}"
+        }), 502
+
+    try:
+        brief = book_agents.generate_research_brief(
+            chapter_data["title"],
+            chapter_data.get("prompt", ""),
+            world_theme,
+            characters,
+            search_results,
+        )
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to generate research brief: {str(e)}"
+        }), 500
+
+    # Persist per-chapter brief
+    brief_path = os.path.join(
+        CHAPTERS_DIR,
+        f"chapter_{chapter_number}_research_brief{TEXT_EXTENSION}",
+    )
+    with open(brief_path, "w", encoding="utf-8") as f:
+        f.write(brief)
+
+    # Return brief + search result count
+    result_count = len(search_results) if search_results else 0
+    return jsonify({
+        "success": True,
+        "research_brief": brief,
+        "search_results_count": result_count,
+        "queries_used": getattr(book_agents, '_last_queries', []),
+    })
 
 
 if __name__ == "__main__":

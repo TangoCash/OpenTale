@@ -112,6 +112,31 @@
                         </tbody>
                     </table>
 
+                    <h5 class="mt-4 mb-3">Research Agent (SearXNG)</h5>
+                    <table class="table table-striped">
+                        <tbody>
+                            <tr>
+                                <td style="width: 25%;"><strong>Enable Research Agent</strong></td>
+                                <td>
+                                    <select class="form-select form-select-sm" name="research_agent_enabled">
+                                        <option value="false" {% if not raw_settings.get('research_agent_enabled') %}selected{% endif %}>False</option>
+                                        <option value="true" {% if raw_settings.get('research_agent_enabled') %}selected{% endif %}>True</option>
+                                    </select>
+                                    <div class="form-text text-muted">When enabled, background research is automatically fetched via SearXNG and injected into the chapter generation prompt, enriching the output with historical context, key facts, quotes, and sensory details.</div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>SearXNG Host</strong></td>
+                                <td>
+                                    <input type="text" class="form-control form-control-sm" name="searxng_host"
+                                           value="{{ raw_settings.get('searxng_host', '') }}"
+                                           placeholder="https://searx.example.org">
+                                    <div class="form-text text-muted">The base URL of your SearXNG instance (e.g. <code>https://searx.example.org</code>). Must be reachable from this server.</div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-save"></i> Save Configuration
                     </button>
@@ -252,7 +277,7 @@
         formData.forEach((value, key) => {
             if (['temperature', 'top_p', 'max_tokens', 'seed', 'timeout'].includes(key)) {
                 data[key] = parseFloat(value);
-            } else if (key === 'debug') {
+            } else if (key === 'debug' || key === 'research_agent_enabled') {
                 data[key] = value === 'true';
             } else {
                 data[key] = value;

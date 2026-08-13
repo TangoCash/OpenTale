@@ -43,7 +43,6 @@
                     <div class="progress-tracker">
                         <div class="btn-group" role="group">
                             <a href="/" class="btn btn-outline-light {% if request.path == '/' %}active{% endif %}">Home</a>
-                            <a href="/config" class="btn btn-outline-light {% if request.path == '/config' %}active{% endif %}">Config</a>
                             <a href="/synopsis" class="btn btn-outline-light {% if request.path == '/synopsis' %}active{% endif %}">Synopsis</a>
                             <a href="/world" class="btn btn-outline-light {% if request.path == '/world' %}active{% endif %}">World</a>
                             <a href="/characters" class="btn btn-outline-light {% if request.path == '/characters' %}active{% endif %}">Characters</a>
@@ -51,8 +50,12 @@
                             {% if chapters %}
                             <a href="/chapters" class="btn btn-outline-light {% if request.path.startswith('/chapter') %}active{% endif %}">Chapters</a>
                             {% endif %}
+                            <a href="/continuity" class="btn btn-outline-light {% if request.path == '/continuity' %}active{% endif %}">Continuity</a>
                         </div>
                     </div>
+                    <a href="/config" class="theme-toggle config-toggle" title="Configuration" style="text-decoration: none;">
+                        <i class="bi bi-gear-fill"></i>
+                    </a>
                     <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
                         <i class="bi bi-moon-fill" id="themeIcon"></i>
                     </button>

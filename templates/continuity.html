@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+
+{% block title %}OpenTale - Continuity Check{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 mb-4">
+        <div class="card">
+            <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                <h2 class="h4 mb-0">📋 Manuscript Continuity Check</h2>
+                <div>
+                    {% if chapters %}
+                    <a href="/chapter/1" class="btn btn-light btn-sm">Go to Chapters &raquo;</a>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">Run a comprehensive check across all chapters for:
+                    character name/description consistency, timeline issues, plot contradictions,
+                    setting inconsistencies, and factual errors.</p>
+
+                <button type="button" class="btn btn-danger btn-lg w-100 mb-3" id="continuityCheckBtn">
+                    <span id="continuityBtnText">🔍 Run Continuity Check</span>
+                    <span id="continuityBtnSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                </button>
+
+                <div id="continuityResultContainer" class="d-none">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h5 class="h6 mb-0">Continuity Report</h5>
+                        <div>
+                            <button type="button" class="btn btn-success btn-sm me-1" id="fixContinuityBtn" title="AI-fix all found issues">
+                                <span id="fixBtnText">🛠️ Fix Issues</span>
+                                <span id="fixBtnSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm me-1" id="recheckContinuityBtn" title="Re-check after fixes">
+                                <span id="recheckBtnText">🔄 Re-Check</span>
+                                <span id="recheckBtnSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="clearContinuityBtn">Clear</button>
+                        </div>
+                    </div>
+                    <div id="continuityResultContent" class="continuity-report border rounded p-2">
+                    </div>
+
+                    <div id="fixResultContainer" class="mt-3 d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h5 class="h6 mb-0 text-success">🔧 AI Fix Suggestions</h5>
+                            <div>
+                                <button type="button" class="btn btn-success btn-sm me-1" id="applyFixesBtn" title="Apply fixes directly to chapter files">
+                                    <span id="applyBtnText">💾 Apply to Chapters</span>
+                                    <span id="applyBtnSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="clearFixBtn">Clear Fixes</button>
+                            </div>
+                        </div>
+                        <div id="fixResultContent" class="fix-report border rounded p-2">
+                        </div>
+                        <div id="applyResultAlert" class="mt-2 d-none"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+$(document).ready(function() {
+    // Continuity check
+    $('#continuityCheckBtn').click(function() {
+        const btn = $(this);
+        btn.prop('disabled', true);
+        $('#continuityBtnText').addClass('d-none');
+        $('#continuityBtnSpinner').removeClass('d-none');
+        $('#continuityResultContainer').removeClass('d-none');
+        $('#continuityResultContent').html('<em>Running continuity check across all chapters... This may take a minute.</em>');
+
+        let fullContent = '';
+
+        fetch('/continuity_check_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        }).then(response => {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            function readStream() {
+                return reader.read().then(({ value, done }) => {
+                    if (done) {
+                        btn.prop('disabled', false);
+                        $('#continuityBtnText').removeClass('d-none');
+                        $('#continuityBtnSpinner').addClass('d-none');
+                        return;
+                    }
+                    const chunk = decoder.decode(value);
+                    chunk.split('\n\n').forEach(event => {
+                        if (event.startsWith('data: ')) {
+                            try {
+                                const jsonData = event.substring(6);
+                                const data = JSON.parse(jsonData);
+                                if (data.content === '[DONE]') return;
+                                if (data.content) {
+                                    fullContent += data.content;
+                                    $('#continuityResultContent').text(fullContent);
+                                    const resultEl = document.getElementById('continuityResultContent');
+                                    if (resultEl) resultEl.scrollTop = resultEl.scrollHeight;
+                                }
+                            } catch (e) {
+                                console.error('Error parsing continuity JSON:', e);
+                            }
+                        }
+                    });
+                    return readStream();
+                });
+            }
+            return readStream();
+        }).catch(error => {
+            console.error('Continuity check error:', error);
+            $('#continuityResultContent').html('<span class="text-danger">Error running continuity check. Please try again.</span>');
+            btn.prop('disabled', false);
+            $('#continuityBtnText').removeClass('d-none');
+            $('#continuityBtnSpinner').addClass('d-none');
+        });
+    });
+
+    // Clear continuity report
+    $('#clearContinuityBtn').click(function() {
+        $('#continuityResultContainer').addClass('d-none');
+        $('#fixResultContainer').addClass('d-none');
+        $('#continuityResultContent').text('');
+        $('#fixResultContent').text('');
+    });
+
+    // Fix continuity issues
+    $('#fixContinuityBtn').click(function() {
+        const reportText = $('#continuityResultContent').text().trim();
+        if (!reportText || reportText.indexOf('Running') === 0) {
+            alert('Please run a continuity check first to generate a report.');
+            return;
+        }
+        const btn = $(this);
+        btn.prop('disabled', true);
+        $('#fixBtnText').addClass('d-none');
+        $('#fixBtnSpinner').removeClass('d-none');
+        $('#fixResultContainer').removeClass('d-none');
+        $('#fixResultContent').html('<em>AI is analyzing the report and generating fixes... This may take a minute.</em>');
+
+        let fullFix = '';
+
+        fetch('/continuity_fix_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ continuity_report: reportText })
+        }).then(response => {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            function readStream() {
+                return reader.read().then(({ value, done }) => {
+                    if (done) {
+                        btn.prop('disabled', false);
+                        $('#fixBtnText').removeClass('d-none');
+                        $('#fixBtnSpinner').addClass('d-none');
+                        return;
+                    }
+                    const chunk = decoder.decode(value);
+                    chunk.split('\n\n').forEach(event => {
+                        if (event.startsWith('data: ')) {
+                            try {
+                                const jsonData = event.substring(6);
+                                const data = JSON.parse(jsonData);
+                                if (data.content === '[DONE]') return;
+                                if (data.content) {
+                                    fullFix += data.content;
+                                    $('#fixResultContent').text(fullFix);
+                                    const fixEl = document.getElementById('fixResultContent');
+                                    if (fixEl) fixEl.scrollTop = fixEl.scrollHeight;
+                                }
+                            } catch (e) {
+                                console.error('Error parsing fix JSON:', e);
+                            }
+                        }
+                    });
+                    return readStream();
+                });
+            }
+            return readStream();
+        }).catch(error => {
+            console.error('Fix error:', error);
+            $('#fixResultContent').html('<span class="text-danger">Error generating fixes. Please try again.</span>');
+            btn.prop('disabled', false);
+            $('#fixBtnText').removeClass('d-none');
+            $('#fixBtnSpinner').addClass('d-none');
+        });
+    });
+
+    // Re-check continuity (re-run the check)
+    $('#recheckContinuityBtn').click(function() {
+        $('#continuityCheckBtn').click();
+    });
+
+    // Clear fix report
+    $('#clearFixBtn').click(function() {
+        $('#fixResultContainer').addClass('d-none');
+        $('#applyResultAlert').addClass('d-none');
+        $('#fixResultContent').text('');
+    });
+
+    // Apply fixes to chapter files
+    $('#applyFixesBtn').click(function() {
+        const fixText = $('#fixResultContent').text().trim();
+        if (!fixText || fixText.indexOf('AI is analyzing') === 0) {
+            alert('Please run Fix Issues first to generate a fix report.');
+            return;
+        }
+        const btn = $(this);
+        btn.prop('disabled', true);
+        $('#applyBtnText').addClass('d-none');
+        $('#applyBtnSpinner').removeClass('d-none');
+        $('#applyResultAlert').addClass('d-none');
+
+        fetch('/continuity_apply_fixes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fix_report: fixText })
+        })
+        .then(response => response.json())
+        .then(data => {
+            btn.prop('disabled', false);
+            $('#applyBtnText').removeClass('d-none');
+            $('#applyBtnSpinner').addClass('d-none');
+            $('#applyResultAlert').removeClass('d-none');
+
+            if (data.success) {
+                let msg = `<div class="alert alert-success alert-dismissible fade show" role="alert">
+                    <strong>Fixes Applied!</strong> ${data.applied_count} fix${data.applied_count !== 1 ? 'es' : ''} applied to chapter files.`;
+                if (data.errors && data.errors.length > 0) {
+                    msg += `<br><small class="text-warning">Warnings: ${data.errors.join('; ')}</small>`;
+                }
+                msg += `<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+                $('#applyResultAlert').html(msg);
+            } else {
+                $('#applyResultAlert').html(`<div class="alert alert-danger">${data.error}</div>`);
+            }
+        })
+        .catch(error => {
+            console.error('Apply fixes error:', error);
+            $('#applyResultAlert').removeClass('d-none').html('<div class="alert alert-danger">Error applying fixes. Please try again.</div>');
+            btn.prop('disabled', false);
+            $('#applyBtnText').removeClass('d-none');
+            $('#applyBtnSpinner').addClass('d-none');
+        });
+    });
+});
+</script>
+{% endblock %}
